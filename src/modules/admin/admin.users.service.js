@@ -1,0 +1,303 @@
+'use strict';
+
+/**
+ * admin.users.service.js
+ *
+ * Admin-level user management.
+ * Operations: list, get, update, soft-delete, approve, reject.
+ *
+ * Does NOT use MongoDB transactions — all operations are single-document
+ * writes that are inherently atomic.
+ */
+
+const { User, USER_STATUS, ROLES } = require('../users/user.model');
+const { NotFoundError, ConflictError, BusinessRuleError } = require('../../shared/errors/AppError');
+const { createAuditLog } = require('../audit/audit.service');
+const {
+    USER_ACTIONS,
+    ADMIN_ACTIONS,
+    ENTITY_TYPES,
+    ACTOR_ROLES,
+} = require('../audit/audit.constants');
+
+// ─── Private helper ────────────────────────────────────────────────────────────
+
+const _findOrFail = async (id) => {
+    const user = await User.findById(id).populate('groupId', 'name percentage');
+    if (!user) throw new NotFoundError('User');
+    return user;
+};
+
+// ─── List ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Admin list of all users with filtering and pagination.
+ *
+ * @param {Object} opts
+ * @param {string}  [opts.status]    - 'PENDING' | 'ACTIVE' | 'REJECTED'
+ * @param {boolean} [opts.verified]  - filter by email verification flag
+ * @param {string}  [opts.email]     - partial email search (case-insensitive)
+ * @param {string}  [opts.role]      - 'ADMIN' | 'CUSTOMER'
+ * @param {Date}    [opts.from]      - createdAt >= from
+ * @param {Date}    [opts.to]        - createdAt <= to
+ * @param {number}  [opts.page]
+ * @param {number}  [opts.limit]
+ * @param {string}  [opts.sortBy]    - field name
+ * @param {string}  [opts.sortOrder] - 'asc' | 'desc'
+ */
+const listUsers = async ({
+    status,
+    verified,
+    email,
+    role,
+    from,
+    to,
+    page = 1,
+    limit = 20,
+    sortBy = 'createdAt',
+    sortOrder = 'desc',
+} = {}) => {
+    limit = Math.min(limit, 100);  // hard cap
+    const skip = (page - 1) * limit;
+
+    const filter = { deletedAt: null, verified: true };
+    if (status) filter.status = status;
+    if (verified != null) filter.verified = verified;
+    if (role) filter.role = role;
+    if (email) filter.email = { $regex: email, $options: 'i' };
+    if (from || to) {
+        filter.createdAt = {};
+        if (from) filter.createdAt.$gte = new Date(from);
+        if (to) filter.createdAt.$lte = new Date(to);
+    }
+
+    const sort = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
+
+    const [users, total] = await Promise.all([
+        User.find(filter)
+            .select('-password -emailVerificationToken -emailVerificationExpires')
+            .populate('groupId', 'name percentage')
+            .sort(sort)
+            .skip(skip)
+            .limit(limit),
+        User.countDocuments(filter),
+    ]);
+
+    return {
+        users,
+        pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    };
+};
+
+// ─── Get One ───────────────────────────────────────────────────────────────────
+
+const getUserById = async (id) => {
+    const user = await User.findById(id)
+        .select('-password -emailVerificationToken -emailVerificationExpires')
+        .populate('groupId', 'name percentage isActive');
+    if (!user) throw new NotFoundError('User');
+    return user;
+};
+
+// ─── Update ────────────────────────────────────────────────────────────────────
+
+/**
+ * Admin update of a user (name, email, groupId, status, verified).
+ */
+const updateUser = async (id, data, adminId) => {
+    const user = await _findOrFail(id);
+    const before = user.toObject();
+
+    const { name, email, groupId, status, verified } = data;
+
+    if (name !== undefined) user.name = name.trim();
+    if (status !== undefined) {
+        user.status = status;
+        // Admin approval (ACTIVE) overrides the need for email verification.
+        // Without this, approved users get locked out with "Please verify your email".
+        if (status === 'ACTIVE') {
+            user.verified = true;
+            user.emailVerificationToken = null;
+            user.emailVerificationExpires = null;
+        }
+    }
+    if (verified !== undefined) user.verified = verified;
+    if (groupId !== undefined) user.groupId = groupId;
+
+    if (email !== undefined && email !== user.email) {
+        const exists = await User.findOne({ email: email.toLowerCase(), _id: { $ne: id } });
+        if (exists) throw new ConflictError('An account with this email already exists.');
+        user.email = email.toLowerCase();
+    }
+
+    await user.save();
+
+    createAuditLog({
+        actorId: adminId,
+        actorRole: ACTOR_ROLES.ADMIN,
+        action: ADMIN_ACTIONS.USER_UPDATED,
+        entityType: ENTITY_TYPES.USER,
+        entityId: user._id,
+        metadata: { before, after: user.toObject() },
+    });
+
+    return user;
+};
+
+// ─── Soft Delete ───────────────────────────────────────────────────────────────
+
+const deleteUser = async (id, adminId) => {
+    const user = await _findOrFail(id);
+
+    if (user.deletedAt) throw new BusinessRuleError('User is already deleted.', 'ALREADY_DELETED');
+    if (user.role === ROLES.ADMIN) throw new BusinessRuleError('Admin accounts cannot be deleted.', 'CANNOT_DELETE_ADMIN');
+
+    user.deletedAt = new Date();
+    user.status = USER_STATUS.REJECTED;   // prevents login
+    await user.save();
+
+    createAuditLog({
+        actorId: adminId,
+        actorRole: ACTOR_ROLES.ADMIN,
+        action: ADMIN_ACTIONS.USER_DELETED,
+        entityType: ENTITY_TYPES.USER,
+        entityId: user._id,
+        metadata: { email: user.email, deletedAt: user.deletedAt },
+    });
+
+    return user;
+};
+
+// ─── Approve / Reject ──────────────────────────────────────────────────────────
+// These already exist in user.service.js. We proxy them here so all
+// admin user operations come through a single module.
+
+const { approveUser, rejectUser } = require('../users/user.service');
+
+// ─── Update Role ──────────────────────────────────────────────────────────────
+
+/**
+ * Admin update of a user's role.
+ * Guards: cannot demote yourself, cannot change a deleted user's role.
+ */
+const updateUserRole = async (id, role, adminId) => {
+    const user = await _findOrFail(id);
+    if (user._id.toString() === adminId.toString()) {
+        throw new BusinessRuleError('You cannot change your own role.', 'SELF_ROLE_CHANGE');
+    }
+    if (!Object.values(ROLES).includes(role)) {
+        throw new BusinessRuleError(`Invalid role: '${role}'. Must be ADMIN or CUSTOMER.`, 'INVALID_ROLE');
+    }
+
+    const previousRole = user.role;
+    user.role = role;
+    await user.save();
+
+    createAuditLog({
+        actorId: adminId,
+        actorRole: ACTOR_ROLES.ADMIN,
+        action: ADMIN_ACTIONS.USER_ROLE_CHANGED,
+        entityType: ENTITY_TYPES.USER,
+        entityId: user._id,
+        metadata: { previousRole, newRole: role },
+    });
+
+    return user;
+};
+
+// ─── Update Currency ──────────────────────────────────────────────────────────
+
+/**
+ * Admin update of a user's wallet currency.
+ * Validates that the currency code exists and is active in the platform.
+ */
+const updateUserCurrency = async (id, currency, adminId) => {
+    const user = await _findOrFail(id);
+    const code = currency.toUpperCase();
+
+    // Validate currency exists in the platform
+    const { Currency } = require('../currency/currency.model');
+    const currencyDoc = await Currency.findOne({ code, isActive: true });
+    if (!currencyDoc) {
+        throw new BusinessRuleError(`Currency '${code}' is not active or does not exist.`, 'INVALID_CURRENCY');
+    }
+
+    const previousCurrency = user.currency;
+    user.currency = code;
+    await user.save();
+
+    createAuditLog({
+        actorId: adminId,
+        actorRole: ACTOR_ROLES.ADMIN,
+        action: ADMIN_ACTIONS.USER_UPDATED,
+        entityType: ENTITY_TYPES.USER,
+        entityId: user._id,
+        metadata: { field: 'currency', previousCurrency, newCurrency: code },
+    });
+
+    return user;
+};
+
+// ─── Reset Password ───────────────────────────────────────────────────────────
+
+/**
+ * Admin reset of a user's password.
+ * Assigns the plain-text password — the pre-save hook auto-hashes via bcrypt.
+ */
+const resetUserPassword = async (id, newPassword, adminId) => {
+    // Need to select password field explicitly since it has select: false
+    const user = await User.findById(id).select('+password');
+    if (!user) throw new NotFoundError('User');
+
+    user.password = newPassword; // pre-save hook will bcrypt hash this
+    await user.save();
+
+    createAuditLog({
+        actorId: adminId,
+        actorRole: ACTOR_ROLES.ADMIN,
+        action: ADMIN_ACTIONS.USER_PASSWORD_RESET,
+        entityType: ENTITY_TYPES.USER,
+        entityId: user._id,
+        metadata: { note: 'Password reset by admin' }, // never log the actual password
+    });
+
+    // Re-fetch without password field for clean response
+    return _findOrFail(id);
+};
+
+// ─── Update Avatar ────────────────────────────────────────────────────────────
+
+/**
+ * Admin update of a user's avatar URL.
+ */
+const updateUserAvatar = async (id, avatarUrl, adminId) => {
+    const user = await _findOrFail(id);
+
+    const previousAvatar = user.avatar;
+    user.avatar = avatarUrl || null;
+    await user.save();
+
+    createAuditLog({
+        actorId: adminId,
+        actorRole: ACTOR_ROLES.ADMIN,
+        action: ADMIN_ACTIONS.USER_AVATAR_UPDATED,
+        entityType: ENTITY_TYPES.USER,
+        entityId: user._id,
+        metadata: { previousAvatar, newAvatar: avatarUrl || null },
+    });
+
+    return user;
+};
+
+module.exports = {
+    listUsers,
+    getUserById,
+    updateUser,
+    deleteUser,
+    approveUser,
+    rejectUser,
+    updateUserRole,
+    updateUserCurrency,
+    resetUserPassword,
+    updateUserAvatar,
+};

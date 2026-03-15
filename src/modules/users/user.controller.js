@@ -1,0 +1,65 @@
+'use strict';
+
+const userService = require('./user.service');
+const { sendSuccess, sendPaginated } = require('../../shared/utils/apiResponse');
+const catchAsync = require('../../shared/utils/catchAsync');
+
+// ── Customer ──────────────────────────────────────────────────────────────────
+
+const getMyProfile = catchAsync(async (req, res) => {
+    const user = await userService.getMyProfile(req.user._id);
+    sendSuccess(res, user, 'Profile retrieved successfully.');
+});
+
+// ── Admin: Queries ────────────────────────────────────────────────────────────
+
+const listUsers = catchAsync(async (req, res) => {
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+    const { role, status, groupId } = req.query;
+
+    const result = await userService.listUsers({ page, limit, role, status, groupId });
+    sendPaginated(res, result.users, result.pagination, 'Users retrieved successfully.');
+});
+
+const getUser = catchAsync(async (req, res) => {
+    const user = await userService.getUserById(req.params.id);
+    sendSuccess(res, user);
+});
+
+// ── Admin: General Update ─────────────────────────────────────────────────────
+
+const updateUser = catchAsync(async (req, res) => {
+    const { name, groupId, creditLimit } = req.body;
+    const user = await userService.updateUser(req.params.id, { name, groupId, creditLimit });
+    sendSuccess(res, user, 'User updated successfully.');
+});
+
+// ── Admin: Activation Lifecycle ───────────────────────────────────────────────
+
+/**
+ * PATCH /api/users/:id/approve
+ * Approve a PENDING or REJECTED user → ACTIVE.
+ */
+const approveUser = catchAsync(async (req, res) => {
+    const user = await userService.approveUser(req.params.id, req.user._id);
+    sendSuccess(res, user, 'User account approved and activated.');
+});
+
+/**
+ * PATCH /api/users/:id/reject
+ * Reject a PENDING or ACTIVE user → REJECTED.
+ */
+const rejectUser = catchAsync(async (req, res) => {
+    const user = await userService.rejectUser(req.params.id, req.user._id);
+    sendSuccess(res, user, 'User account rejected.');
+});
+
+module.exports = {
+    getMyProfile,
+    listUsers,
+    getUser,
+    updateUser,
+    approveUser,
+    rejectUser,
+};

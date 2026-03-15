@@ -1,0 +1,308 @@
+'use strict';
+
+/**
+ * me.controller.js — User Panel: profile, wallet, orders, products, deposits
+ *
+ * All handlers operate on the authenticated user (req.user).
+ * Ownership isolation: users can ONLY see their own data.
+ */
+
+const { User } = require('../users/user.model');
+const { WalletTransaction } = require('../wallet/walletTransaction.model');
+const orderService = require('../orders/order.service');
+const depositService = require('../deposits/deposit.service');
+const productService = require('../products/product.service');
+const { sendSuccess, sendCreated, sendPaginated } = require('../../shared/utils/apiResponse');
+const catchAsync = require('../../shared/utils/catchAsync');
+const { NotFoundError } = require('../../shared/errors/AppError');
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const parsePage = (v) => Math.max(1, parseInt(v, 10) || 1);
+const parseLimit = (v) => Math.min(100, Math.max(1, parseInt(v, 10) || 20));
+
+// =============================================================================
+// PROFILE  —  GET /api/me
+// =============================================================================
+
+/**
+ * Return the authenticated user's full profile including wallet and group info.
+ */
+const getProfile = catchAsync(async (req, res) => {
+    const user = await User.findById(req.user._id)
+        .select('-password -__v')
+        .populate('groupId', 'name percentage isActive');
+
+    if (!user) throw new NotFoundError('User');
+
+    sendSuccess(res, {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        verified: user.verified,
+        currency: user.currency,
+        walletBalance: user.walletBalance,
+        group: user.groupId,
+        createdAt: user.createdAt,
+    }, 'Profile retrieved.');
+});
+
+// =============================================================================
+// WALLET  —  GET /api/me/wallet
+// =============================================================================
+
+/**
+ * Wallet summary: balance + last 5 transactions.
+ */
+const getWallet = catchAsync(async (req, res) => {
+    const user = await User.findById(req.user._id).select('walletBalance currency creditLimit');
+    if (!user) throw new NotFoundError('User');
+
+    const recent = await WalletTransaction.find({ userId: req.user._id })
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .lean();
+
+    sendSuccess(res, {
+        walletBalance: user.walletBalance,
+        currency: user.currency,
+        recentTransactions: recent,
+    }, 'Wallet summary retrieved.');
+});
+
+// =============================================================================
+// WALLET TRANSACTIONS  —  GET /api/me/wallet/transactions
+// =============================================================================
+
+/**
+ * Paginated transaction history for the authenticated user.
+ * Query: page, limit, from (ISO date), to (ISO date)
+ */
+const getTransactions = catchAsync(async (req, res) => {
+    const page = parsePage(req.query.page);
+    const limit = parseLimit(req.query.limit);
+    const filter = { userId: req.user._id };
+
+    if (req.query.from || req.query.to) {
+        filter.createdAt = {};
+        if (req.query.from) filter.createdAt.$gte = new Date(req.query.from);
+        if (req.query.to) filter.createdAt.$lte = new Date(req.query.to);
+    }
+
+    const skip = (page - 1) * limit;
+    const [transactions, total] = await Promise.all([
+        WalletTransaction.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+        WalletTransaction.countDocuments(filter),
+    ]);
+
+    sendPaginated(res, transactions, { page, limit, total, pages: Math.ceil(total / limit) }, 'Transactions retrieved.');
+});
+
+// =============================================================================
+// ORDERS  —  GET /api/me/orders  |  GET /api/me/orders/:id
+// =============================================================================
+
+/**
+ * Paginated order list for the authenticated user.
+ * Query: status, page, limit, from, to
+ */
+const getOrders = catchAsync(async (req, res) => {
+    const page = parsePage(req.query.page);
+    const limit = parseLimit(req.query.limit);
+    const filter = {
+        userId: req.user._id,
+        ...(req.query.status && { status: req.query.status }),
+    };
+
+    if (req.query.from || req.query.to) {
+        filter.createdAt = {};
+        if (req.query.from) filter.createdAt.$gte = new Date(req.query.from);
+        if (req.query.to) filter.createdAt.$lte = new Date(req.query.to);
+    }
+
+    const { Order } = require('../orders/order.model');
+    const skip = (page - 1) * limit;
+    const [orders, total] = await Promise.all([
+        Order.find(filter)
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .populate('productId', 'name image')
+            .lean(),
+        Order.countDocuments(filter),
+    ]);
+
+    sendPaginated(res, orders, { page, limit, total, pages: Math.ceil(total / limit) }, 'Orders retrieved.');
+});
+
+/**
+ * Single order by ID — enforces ownership.
+ */
+const getOrder = catchAsync(async (req, res) => {
+    const order = await orderService.getOrderById(req.params.id, req.user._id);
+    sendSuccess(res, order);
+});
+
+// =============================================================================
+// PLACE ORDER  —  POST /api/me/orders
+// =============================================================================
+
+/**
+ * Place a new order. Only ACTIVE + verified users can place orders.
+ * Balance must be >= order cost (credit system removed).
+ */
+const placeOrder = catchAsync(async (req, res) => {
+    const { productId, quantity, orderFieldsValues } = req.body;
+
+    const auditContext = {
+        actorId: req.user._id,
+        actorRole: 'CUSTOMER',
+        ipAddress: req.ip ?? null,
+        userAgent: req.get('User-Agent') ?? null,
+    };
+
+    const { order, idempotent } = await orderService.createOrder({
+        userId: req.user._id,
+        productId,
+        quantity: parseInt(quantity, 10) || 1,
+        idempotencyKey: req.headers['idempotency-key'] || null,
+        orderFieldsValues: orderFieldsValues ?? null,
+        auditContext,
+    });
+
+    if (idempotent) {
+        return sendSuccess(res, order, 'Order already exists (idempotent response).');
+    }
+    sendCreated(res, order, 'Order placed successfully.');
+});
+
+// =============================================================================
+// PRODUCTS  —  GET /api/me/products  |  GET /api/me/products/:id
+// =============================================================================
+
+/**
+ * Public product catalogue for authenticated customers.
+ * Customers see only active products.
+ * Query: search, page, limit
+ */
+const getProducts = catchAsync(async (req, res) => {
+    const page = parsePage(req.query.page);
+    const limit = parseLimit(req.query.limit);
+    const { Product } = require('../products/product.model');
+
+    const filter = { isActive: true };
+    if (req.query.search) {
+        filter.$or = [
+            { name: { $regex: req.query.search, $options: 'i' } },
+            { description: { $regex: req.query.search, $options: 'i' } },
+        ];
+    }
+
+    const skip = (page - 1) * limit;
+    const [products, total] = await Promise.all([
+        Product.find(filter)
+            .sort({ name: 1 })
+            .skip(skip)
+            .limit(limit)
+            .select('-providerProduct -orderFields')
+            .lean(),
+        Product.countDocuments(filter),
+    ]);
+
+    sendPaginated(res, products, { page, limit, total, pages: Math.ceil(total / limit) }, 'Products retrieved.');
+});
+
+/**
+ * Single product detail — customers see only active products.
+ */
+const getProduct = catchAsync(async (req, res) => {
+    const { Product } = require('../products/product.model');
+    const product = await Product.findOne({ _id: req.params.id, isActive: true })
+        .select('-providerProduct')
+        .lean();
+
+    if (!product) throw new NotFoundError('Product');
+    sendSuccess(res, product);
+});
+
+// =============================================================================
+// DEPOSITS  —  POST /api/me/deposits  |  GET /api/me/deposits  |  GET /api/me/deposits/:id
+// =============================================================================
+
+/**
+ * Create a new deposit request.
+ * Accepts multipart/form-data with a `screenshotProof` file (via upload middleware).
+ * The uploaded file path is stored as `transferImageUrl`.
+ */
+const createDeposit = catchAsync(async (req, res) => {
+    const { amountRequested, transferredFromNumber } = req.body;
+
+    // req.file is set by multer upload.single('screenshotProof')
+    // Fallback to direct URL field for JSON-only clients
+    let transferImageUrl;
+    if (req.file) {
+        // Build a relative URL from the stored path
+        transferImageUrl = `/uploads/deposits/${req.file.filename}`;
+    } else if (req.body.transferImageUrl) {
+        transferImageUrl = req.body.transferImageUrl;
+    } else {
+        const { ValidationError } = require('../../shared/errors/AppError');
+        throw new ValidationError('screenshotProof file or transferImageUrl is required.');
+    }
+
+    const deposit = await depositService.createDepositRequest({
+        userId: req.user._id,
+        amountRequested: parseFloat(amountRequested),
+        transferImageUrl,
+        transferredFromNumber,
+        auditContext: {
+            actorId: req.user._id,
+            actorRole: 'CUSTOMER',
+            ipAddress: req.ip ?? null,
+            userAgent: req.get('User-Agent') ?? null,
+        },
+    });
+
+    sendCreated(res, deposit, 'Deposit request submitted successfully. Pending admin review.');
+});
+
+/**
+ * List authenticated user's own deposit requests.
+ * Query: status, page, limit
+ */
+const getDeposits = catchAsync(async (req, res) => {
+    const page = parsePage(req.query.page);
+    const limit = parseLimit(req.query.limit);
+    const { status } = req.query;
+
+    const result = await depositService.listMyDeposits(req.user._id, { page, limit, status });
+    sendPaginated(res, result.deposits, result.pagination, 'Deposit requests retrieved.');
+});
+
+/**
+ * Single deposit by ID — user may only see their own.
+ */
+const getDeposit = catchAsync(async (req, res) => {
+    const deposit = await depositService.getDepositById(req.params.id, req.user._id);
+    sendSuccess(res, deposit);
+});
+
+// =============================================================================
+// EXPORTS
+// =============================================================================
+
+module.exports = {
+    getProfile,
+    getWallet,
+    getTransactions,
+    getOrders,
+    getOrder,
+    placeOrder,
+    getProducts,
+    getProduct,
+    createDeposit,
+    getDeposits,
+    getDeposit,
+};

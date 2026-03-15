@@ -1,0 +1,269 @@
+'use strict';
+
+/**
+ * admin.validation.js
+ *
+ * Joi schemas + reusable validate() middleware for all admin API inputs.
+ *
+ * Usage in routes:
+ *   router.patch('/users/:id', validateBody(schemas.updateUser), controller.updateUser);
+ *
+ * Validation strategy:
+ *   - Body validation: validateBody()
+ *   - Query validation: validateQuery()
+ *   - Params are validated inline using Mongoose ObjectId casting (throws 404 on bad id)
+ */
+
+const Joi = require('joi');
+const { BusinessRuleError } = require('../../shared/errors/AppError');
+
+// ─── Reusable field definitions ───────────────────────────────────────────────
+
+const objectId = () => Joi.string().hex().length(24).messages({
+    'string.length': '{{#label}} must be a valid 24-character ObjectId',
+    'string.hex': '{{#label}} must be a valid ObjectId (hex characters only)',
+});
+
+const pagination = {
+    page: Joi.number().integer().min(1).default(1),
+    limit: Joi.number().integer().min(1).max(100).default(20),
+};
+
+// ─── Middleware factory ───────────────────────────────────────────────────────
+
+/**
+ * Returns an Express middleware that validates req.body against `schema`.
+ * Strips unknown fields (allowUnknown: false by default).
+ */
+const validateBody = (schema) => (req, res, next) => {
+    const { error, value } = schema.validate(req.body, {
+        abortEarly: false,
+        stripUnknown: true,
+        convert: true,
+    });
+    if (error) {
+        const message = error.details.map((d) => d.message).join('; ');
+        return next(new BusinessRuleError(message, 'VALIDATION_ERROR'));
+    }
+    req.body = value;
+    next();
+};
+
+/**
+ * Returns an Express middleware that validates req.query against `schema`.
+ */
+const validateQuery = (schema) => (req, res, next) => {
+    const { error, value } = schema.validate(req.query, {
+        abortEarly: false,
+        stripUnknown: true,
+        convert: true,
+    });
+    if (error) {
+        const message = error.details.map((d) => d.message).join('; ');
+        return next(new BusinessRuleError(message, 'VALIDATION_ERROR'));
+    }
+    req.query = value;
+    next();
+};
+
+// ─── User schemas ─────────────────────────────────────────────────────────────
+
+const updateUserSchema = Joi.object({
+    name: Joi.string().trim().min(2).max(64),
+    email: Joi.string().email(),
+    groupId: objectId().allow(null),
+    status: Joi.string().valid('PENDING', 'ACTIVE', 'REJECTED'),
+    verified: Joi.boolean(),
+}).min(1).messages({ 'object.min': 'At least one field must be provided for update' });
+
+const listUsersQuery = Joi.object({
+    ...pagination,
+    status: Joi.string().valid('PENDING', 'ACTIVE', 'REJECTED'),
+    verified: Joi.boolean(),
+    email: Joi.string().max(128),
+    role: Joi.string().valid('ADMIN', 'CUSTOMER'),
+    from: Joi.date().iso(),
+    to: Joi.date().iso().min(Joi.ref('from')),
+    sortBy: Joi.string().valid('createdAt', 'email', 'name', 'status', 'walletBalance').default('createdAt'),
+    sortOrder: Joi.string().valid('asc', 'desc').default('desc'),
+});
+
+const updateUserRoleSchema = Joi.object({
+    role: Joi.string().valid('ADMIN', 'CUSTOMER').required().messages({
+        'any.required': 'Role is required',
+        'any.only': 'Role must be ADMIN or CUSTOMER',
+    }),
+});
+
+const updateUserCurrencySchema = Joi.object({
+    currency: Joi.string().trim().uppercase().pattern(/^[A-Z]{3}$/).required().messages({
+        'any.required': 'Currency code is required',
+        'string.pattern.base': 'Currency must be a 3-letter ISO 4217 code (e.g. USD, SAR)',
+    }),
+});
+
+const resetUserPasswordSchema = Joi.object({
+    password: Joi.string().min(8).max(128).required().messages({
+        'any.required': 'New password is required',
+        'string.min': 'Password must be at least 8 characters',
+    }),
+});
+
+const updateUserAvatarSchema = Joi.object({
+    avatar: Joi.string().uri({ allowRelative: true }).allow('', null).required().messages({
+        'any.required': 'Avatar URL is required (use null to remove)',
+    }),
+});
+
+// ─── Provider schemas ─────────────────────────────────────────────────────────
+
+const createProviderSchema = Joi.object({
+    name: Joi.string().trim().min(2).max(64).required(),
+    slug: Joi.string().trim().lowercase().pattern(/^[a-z0-9-]+$/).max(64),
+    baseUrl: Joi.string().uri().required(),
+    apiToken: Joi.string().trim().max(512),
+    isActive: Joi.boolean().default(true),
+    syncInterval: Joi.number().integer().min(0).default(60),
+    supportedFeatures: Joi.array().items(Joi.string()).default([]),
+});
+
+const updateProviderSchema = Joi.object({
+    name: Joi.string().trim().min(2).max(64),
+    slug: Joi.string().trim().lowercase().pattern(/^[a-z0-9-]+$/).max(64),
+    baseUrl: Joi.string().uri(),
+    apiToken: Joi.string().trim().max(512).allow('', null),
+    isActive: Joi.boolean(),
+    syncInterval: Joi.number().integer().min(0),
+    supportedFeatures: Joi.array().items(Joi.string()),
+}).min(1);
+
+// ─── Order schemas ────────────────────────────────────────────────────────────
+
+const listOrdersQuery = Joi.object({
+    ...pagination,
+    status: Joi.string().valid('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED'),
+    userId: objectId(),
+    providerId: objectId(),
+    from: Joi.date().iso(),
+    to: Joi.date().iso().min(Joi.ref('from')),
+});
+
+// ─── Wallet schemas ───────────────────────────────────────────────────────────
+
+const walletAdjustmentSchema = Joi.object({
+    amount: Joi.number().positive().max(100_000).required().messages({
+        'number.max': 'Maximum single adjustment is 100,000',
+        'number.positive': 'Amount must be a positive number',
+        'any.required': 'Amount is required',
+    }),
+    reason: Joi.string().trim().min(3).max(255).required().messages({
+        'any.required': 'A reason is required for audit purposes',
+        'string.min': 'Reason must be at least 3 characters',
+    }),
+});
+
+// ─── Group schemas ────────────────────────────────────────────────────────────
+
+const createGroupSchema = Joi.object({
+    name: Joi.string().trim().min(2).max(64).required(),
+    percentage: Joi.number().min(0).max(1000).required(),
+    isActive: Joi.boolean().default(true),
+});
+
+const updateGroupSchema = Joi.object({
+    name: Joi.string().trim().min(2).max(64),
+    percentage: Joi.number().min(0).max(1000),
+    isActive: Joi.boolean(),
+}).min(1);
+
+// ─── Currency schemas ─────────────────────────────────────────────────────────
+
+const updateCurrencySchema = Joi.object({
+    platformRate: Joi.number().positive().required().messages({
+        'any.required': 'platformRate is required',
+    }),
+    markupPercentage: Joi.number().min(0).max(100),
+    isActive: Joi.boolean(),
+}).min(1);
+
+const createCurrencySchema = Joi.object({
+    code: Joi.string().trim().uppercase().length(3).pattern(/^[A-Z]{3}$/).required().messages({
+        'any.required': 'Currency code is required',
+        'string.length': 'Currency code must be exactly 3 letters (e.g. USD, SAR)',
+        'string.pattern.base': 'Currency code must be a 3-letter ISO 4217 code',
+    }),
+    name: Joi.string().trim().min(1).max(64).required().messages({
+        'any.required': 'Currency name is required',
+    }),
+    symbol: Joi.string().trim().min(1).max(8).required().messages({
+        'any.required': 'Currency symbol is required',
+    }),
+    platformRate: Joi.number().positive().required().messages({
+        'any.required': 'platformRate is required',
+    }),
+    marketRate: Joi.number().positive().allow(null),
+    markupPercentage: Joi.number().min(0).max(100).default(0),
+    isActive: Joi.boolean().default(true),
+});
+
+// ─── Deposit schemas ──────────────────────────────────────────────────────────
+
+const updateDepositSchema = Joi.object({
+    amountRequested: Joi.number().positive(),
+    transferredFromNumber: Joi.string().trim(),
+}).min(1).messages({
+    'object.min': 'At least one field must be provided for update',
+});
+
+// ─── Settings schema ──────────────────────────────────────────────────────────
+
+const updateSettingSchema = Joi.object({
+    value: Joi.alternatives().try(
+        Joi.string(),
+        Joi.number(),
+        Joi.boolean(),
+        Joi.array(),
+        Joi.object()
+    ).required().messages({ 'any.required': 'Setting value is required' }),
+});
+
+// ─── Deposit admin schema ─────────────────────────────────────────────────────
+
+const approveDepositSchema = Joi.object({
+    overrideAmount: Joi.number().positive().optional(),
+});
+
+// ─── Exports ──────────────────────────────────────────────────────────────────
+
+module.exports = {
+    validateBody,
+    validateQuery,
+    schemas: {
+        // Users
+        updateUser: updateUserSchema,
+        listUsersQuery,
+        updateUserRole: updateUserRoleSchema,
+        updateUserCurrency: updateUserCurrencySchema,
+        resetUserPassword: resetUserPasswordSchema,
+        updateUserAvatar: updateUserAvatarSchema,
+        // Providers
+        createProvider: createProviderSchema,
+        updateProvider: updateProviderSchema,
+        // Orders
+        listOrdersQuery,
+        // Wallet
+        walletAdjustment: walletAdjustmentSchema,
+        // Groups
+        createGroup: createGroupSchema,
+        updateGroup: updateGroupSchema,
+        // Currency
+        updateCurrency: updateCurrencySchema,
+        createCurrency: createCurrencySchema,
+        // Deposits
+        updateDeposit: updateDepositSchema,
+        // Settings
+        updateSetting: updateSettingSchema,
+        // Deposits approval
+        approveDeposit: approveDepositSchema,
+    },
+};
