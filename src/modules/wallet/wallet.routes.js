@@ -9,6 +9,13 @@ const requireActiveUser = require('../../shared/middlewares/requireActiveUser');
 const router = Router();
 
 /**
+ * @route  GET /api/wallet/stats
+ * @desc   Get authenticated user's wallet statistics (aggregated)
+ * @access Active users (Customer or Admin)
+ */
+router.get('/stats', authenticate, requireActiveUser, walletController.getMyWalletStats);
+
+/**
  * @route  GET /api/wallet/transactions
  * @desc   Get authenticated user's own transaction history
  * @access Active users (Customer or Admin)

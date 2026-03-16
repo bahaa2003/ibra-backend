@@ -37,6 +37,7 @@ const {
     listAllProviderProducts,
     listProviderProducts,
     getProviderProduct,
+    getProviderProductPrice,
     setTranslatedName,
     listProducts,
     createProduct,
@@ -63,6 +64,7 @@ router.post('/catalog/sync/:providerId', syncProvider);
 
 router.get('/provider-products', listAllProviderProducts);
 router.get('/provider-products/item/:id', getProviderProduct);
+router.get('/provider-products/item/:id/price', getProviderProductPrice);
 router.patch('/provider-products/item/:id/translated-name', setTranslatedName);
 router.get('/provider-products/:providerId', listProviderProducts);
 

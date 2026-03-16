@@ -109,7 +109,7 @@ const productSchema = new mongoose.Schema(
         basePrice: {
             type: Number,
             required: [true, 'Base price is required'],
-            min: [0.01, 'basePrice must be > 0'],
+            min: [0, 'basePrice cannot be negative'],
         },
 
         /**
@@ -377,7 +377,7 @@ const computeFinalPrice = (providerPrice, markupType, markupValue) => {
         // default: percentage
         price = providerPrice * (1 + (markupValue / 100));
     }
-    return parseFloat(price.toFixed(2));
+    return parseFloat(price.toFixed(6));
 };
 
 const Product = mongoose.model('Product', productSchema);

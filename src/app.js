@@ -42,13 +42,17 @@ app.use(
 );
 
 // ── Request Parsing ───────────────────────────────────────────────────────────
-app.use(express.json({ limit: '10kb' }));
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // ── Logging ───────────────────────────────────────────────────────────────────
 if (config.env !== 'test') {
     app.use(morgan(config.env === 'production' ? 'combined' : 'dev'));
 }
+
+// ── Static Files ──────────────────────────────────────────────────────────────
+// Serve uploaded files (deposit receipts, etc.) from /uploads
+app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
 // ── Passport (OAuth strategies) ───────────────────────────────────────────────
 // Only initialize when Google credentials are configured.

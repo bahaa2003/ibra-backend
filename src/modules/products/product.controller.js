@@ -26,7 +26,7 @@ const listProducts = catchAsync(async (req, res) => {
         if (markup > 0) {
             for (const product of products) {
                 const base = Number(product.finalPrice || product.basePrice || 0);
-                product.finalPrice = parseFloat((base + base * (markup / 100)).toFixed(2));
+                product.finalPrice = parseFloat((base + base * (markup / 100)).toFixed(6));
             }
         }
     }

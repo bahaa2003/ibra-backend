@@ -106,7 +106,7 @@ const createProduct = async ({
     return Product.create({
         name,
         description,
-        basePrice: parseFloat(parseFloat(basePrice).toFixed(2)),
+        basePrice: parseFloat(parseFloat(basePrice).toFixed(6)),
         minQty,
         maxQty,
         category,
@@ -187,7 +187,9 @@ const publishFromProviderProduct = async ({
     }
 
     // ── Compute pricing ───────────────────────────────────────────────────────
-    const providerPrice = parseFloat(pp.rawPrice.toFixed(2));
+    // Fallback: if rawPrice is 0 but rawPayload has the real price, use that
+    const effectiveRawPrice = Number(pp.rawPrice || pp.rawPayload?.product_price || 0) || 0;
+    const providerPrice = parseFloat(effectiveRawPrice.toFixed(6));
 
     let resolvedFinalPrice;
     let resolvedBasePrice;
@@ -202,12 +204,18 @@ const publishFromProviderProduct = async ({
             resolvedFinalPrice = computeFinalPrice(providerPrice, markupType, markupValue);
             resolvedBasePrice = resolvedFinalPrice ?? providerPrice;
         } else if (basePrice != null) {
-            resolvedBasePrice = parseFloat(parseFloat(basePrice).toFixed(2));
+            resolvedBasePrice = parseFloat(parseFloat(basePrice).toFixed(6));
             resolvedFinalPrice = resolvedBasePrice;
         } else {
             resolvedBasePrice = providerPrice;
             resolvedFinalPrice = providerPrice;
         }
+    }
+
+    // Guard: if computed price is 0 but admin supplied a valid basePrice, use it
+    if (resolvedBasePrice <= 0 && basePrice != null && parseFloat(basePrice) > 0) {
+        resolvedBasePrice = parseFloat(parseFloat(basePrice).toFixed(6));
+        resolvedFinalPrice = resolvedBasePrice;
     }
 
     return Product.create({
@@ -277,7 +285,7 @@ const updateProduct = async (productId, updates) => {
         && effectivePricingMode === PRICING_MODES.SYNC;
 
     if ((switchingToSync || markupChanged) && product.providerProduct) {
-        const rawPrice = parseFloat(product.providerProduct.rawPrice.toFixed(2));
+        const rawPrice = parseFloat(product.providerProduct.rawPrice.toFixed(6));
         const newFinalPrice = computeFinalPrice(rawPrice, effectiveMarkupType, effectiveMarkupValue);
         safe.providerPrice = rawPrice;
         safe.finalPrice = newFinalPrice;

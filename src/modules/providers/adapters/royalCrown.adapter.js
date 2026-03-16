@@ -146,12 +146,12 @@ class RoyalCrownAdapter extends BaseProviderAdapter {
             : (data.data ?? data.products ?? data.services ?? []);
 
         return list.map((item) => this._validateDTO({
-            externalProductId: String(item.id ?? item.service ?? item.product_id ?? item.code),
-            rawName: String(item.name ?? item.title ?? item.service_name ?? 'Unknown'),
-            rawPrice: parseFloat(item.rate ?? item.price ?? item.cost ?? 0),
-            minQty: parseInt(item.min ?? item.min_quantity ?? 1, 10),
-            maxQty: parseInt(item.max ?? item.max_quantity ?? 9999, 10),
-            isActive: item.active !== false && item.status !== 'inactive' && item.status !== 'Inactive',
+            externalProductId: String(item.id ?? item.product_id ?? item.service ?? item.code),
+            rawName: String(item.name ?? item.product_name ?? item.product_name_translated ?? item.title ?? item.service_name ?? 'Unknown'),
+            rawPrice: parseFloat(item.rate ?? item.price ?? item.product_price ?? item.cost ?? 0),
+            minQty: parseInt(item.min ?? item.min_qty ?? item.min_quantity ?? 1, 10),
+            maxQty: parseInt(item.max ?? item.max_qty ?? item.max_quantity ?? 9999, 10),
+            isActive: item.active !== false && item.is_active !== false && item.status !== 'inactive' && item.status !== 'Inactive',
             rawPayload: item,
         }));
     }

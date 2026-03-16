@@ -95,6 +95,21 @@ const getProviderProduct = catchAsync(async (req, res) => {
 });
 
 /**
+ * GET /admin/provider-products/item/:id/price
+ * Returns the price data for a single provider product (used by sync button).
+ */
+const getProviderProductPrice = catchAsync(async (req, res) => {
+    const pp = await ppService.getProviderProductById(req.params.id);
+    const rawPrice = pp.rawPrice || pp.rawPayload?.product_price || 0;
+    sendSuccess(res, {
+        rawPrice,
+        rawName: pp.rawName || pp.rawPayload?.product_name || '',
+        provider: pp.provider?.toString() || '',
+        found: true,
+    }, 'Provider product price retrieved.');
+});
+
+/**
  * PATCH /admin/provider-products/item/:id/translated-name
  * Set admin-friendly name for a raw provider product.
  * Body: { translatedName: "..." }
@@ -195,6 +210,8 @@ const createProduct = catchAsync(async (req, res) => {
  * }
  */
 const createProductFromProvider = catchAsync(async (req, res) => {
+    console.log('📦 FROM-PROVIDER REQ.BODY:', JSON.stringify(req.body, null, 2));
+
     const {
         providerProductId,
         name,
@@ -208,24 +225,41 @@ const createProductFromProvider = catchAsync(async (req, res) => {
         pricingMode,
         executionType,
         displayOrder,
+        markupType,
+        markupValue,
+        isActive,
     } = req.body;
 
-    const product = await productService.createProductFromProvider({
-        providerProductId,
-        name,
-        basePrice,
-        image: imageUrl ?? image ?? null,   // accept both field names
-        category: category ?? null,
-        description: description ?? null,
-        minQty,
-        maxQty,
-        pricingMode,
-        executionType,
-        displayOrder,
-        createdBy: req.user._id,
-    });
+    try {
+        const product = await productService.createProductFromProvider({
+            providerProductId,
+            name,
+            basePrice,
+            image: imageUrl ?? image ?? null,   // accept both field names
+            category: category ?? null,
+            description: description ?? null,
+            minQty,
+            maxQty,
+            pricingMode,
+            markupType,
+            markupValue,
+            isActive,
+            executionType,
+            displayOrder,
+            createdBy: req.user._id,
+        });
+        console.log('✅ PRODUCT CREATED:', product._id);
 
-    sendCreated(res, product, 'Product published from provider product.');
+        sendCreated(res, product, 'Product published from provider product.');
+    } catch (err) {
+        console.error('❌ FROM-PROVIDER ERROR:', err.message);
+        if (err.errors) {
+            Object.entries(err.errors).forEach(([field, e]) => {
+                console.error(`   → Field "${field}": ${e.message}`);
+            });
+        }
+        throw err; // re-throw so catchAsync sends proper response
+    }
 });
 
 /**
@@ -254,6 +288,7 @@ module.exports = {
     listAllProviderProducts,
     listProviderProducts,
     getProviderProduct,
+    getProviderProductPrice,
     setTranslatedName,
     // Layer 3
     listProducts,

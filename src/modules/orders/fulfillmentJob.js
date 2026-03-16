@@ -89,7 +89,7 @@ const runOnce = async (providerOverride = null) => {
         }
 
         const elapsed = Date.now() - startedAt;
-        console.log(`[FulfillmentJob] All providers polled in ${elapsed}ms:`, allStats);
+        //console.log(`[FulfillmentJob] All providers polled in ${elapsed}ms:`, allStats);
         return allStats;
 
     } catch (err) {
