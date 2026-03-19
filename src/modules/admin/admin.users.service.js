@@ -209,22 +209,51 @@ const updateUserRole = async (id, role, adminId) => {
 
 /**
  * Admin update of a user's wallet currency.
- * Validates that the currency code exists and is active in the platform.
+ *
+ * CRITICAL: When the currency changes the wallet balance MUST be converted
+ * so the user's purchasing power is preserved.
+ *
+ * Formula:  newBalance = (currentBalance / oldRate) * newRate
+ *
+ * Both `currency` and `walletBalance` are updated atomically to prevent
+ * a window where the code is changed but the balance still holds the
+ * old-currency amount.
  */
 const updateUserCurrency = async (id, currency, adminId) => {
     const user = await _findOrFail(id);
     const code = currency.toUpperCase();
 
-    // Validate currency exists in the platform
+    // Same currency → no-op
+    if (user.currency === code) return user;
+
+    // Validate new currency exists and is active
     const { Currency } = require('../currency/currency.model');
-    const currencyDoc = await Currency.findOne({ code, isActive: true });
-    if (!currencyDoc) {
+    const newCurrencyDoc = await Currency.findOne({ code, isActive: true });
+    if (!newCurrencyDoc) {
         throw new BusinessRuleError(`Currency '${code}' is not active or does not exist.`, 'INVALID_CURRENCY');
     }
 
+    // Fetch old currency rate (USD = 1)
+    const oldCode = user.currency || 'USD';
+    let oldRate = 1;
+    if (oldCode !== 'USD') {
+        const oldCurrencyDoc = await Currency.findOne({ code: oldCode });
+        if (oldCurrencyDoc) oldRate = oldCurrencyDoc.platformRate;
+    }
+    const newRate = newCurrencyDoc.platformRate;
+
+    // Convert balance
+    const { convertBalance } = require('../../shared/utils/currencyMath');
+    const previousBalance = user.walletBalance;
+    const newBalance = convertBalance(previousBalance, oldRate, newRate);
+
+    // Atomic update — currency + balance together
     const previousCurrency = user.currency;
-    user.currency = code;
-    await user.save();
+    const updated = await User.findByIdAndUpdate(
+        id,
+        { $set: { currency: code, walletBalance: newBalance } },
+        { new: true }
+    ).populate('groupId', 'name percentage isActive');
 
     createAuditLog({
         actorId: adminId,
@@ -232,10 +261,18 @@ const updateUserCurrency = async (id, currency, adminId) => {
         action: ADMIN_ACTIONS.USER_UPDATED,
         entityType: ENTITY_TYPES.USER,
         entityId: user._id,
-        metadata: { field: 'currency', previousCurrency, newCurrency: code },
+        metadata: {
+            field: 'currency',
+            previousCurrency,
+            newCurrency: code,
+            previousBalance,
+            newBalance,
+            oldRate,
+            newRate,
+        },
     });
 
-    return user;
+    return updated;
 };
 
 // ─── Reset Password ───────────────────────────────────────────────────────────

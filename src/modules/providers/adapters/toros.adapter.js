@@ -5,24 +5,20 @@
  *
  * HTTP adapter for the **Torosfon Store** external provider.
  *
+ * Torosfon's API is an exact clone of the Royal Crown API.
+ *
  * ─── API Overview ─────────────────────────────────────────────────────────────
  *  Base URL    : provider.baseUrl  (e.g. https://torosfon.com)
- *  Auth        : Authorization: Bearer <token>
+ *  Auth        : api-token: <token>
  *
- *  GET  /api/products                    — fetch product catalogue
- *  POST /api/orders                      — place a new order
- *  GET  /api/orders/{orderId}            — check single order
- *  POST /api/orders/batch-status         — batch check  { order_ids: [1,2,3] }
- *  GET  /api/account/balance             — account balance
- *
- * ─── Status Vocabulary ────────────────────────────────────────────────────────
- *  Toros        → Internal platform canonical
- *  completed    → Completed
- *  processing   → Pending
- *  pending      → Pending
- *  failed       → Cancelled
- *  rejected     → Cancelled
- *  cancelled    → Cancelled
+ *  GET  /api/AllProducts                       — fetch product catalogue
+ *  GET  /api/PlaceOrder/{productId}/data
+ *             ?amount={amount}
+ *             &player_Id={playerId}
+ *             &referenceId={referenceId}       — place an order
+ *  GET  /api/CheckOrder?order_id={orderId}     — check single order
+ *  GET  /api/CheckListOrders?orders=[1,2,3]    — batch check
+ *  GET  /api/GetMyInfo                         — account / balance info
  *
  * ─── Normalised DTO shapes ────────────────────────────────────────────────────
  *  getProducts()  → ProviderProductDTO[]
@@ -30,6 +26,11 @@
  *  checkOrder()   → OrderStatusResult  { providerOrderId, providerStatus, rawResponse }
  *  checkOrders()  → OrderStatusResult[]
  *  getBalance()   → Object
+ *
+ * Status mapping (provider → platform):
+ *   Completed  → 'Completed'
+ *   Pending    → 'Pending'
+ *   Cancelled  → 'Cancelled'
  *
  * The adapter NEVER throws for placeOrder() — all failures return { success: false }.
  */
@@ -39,47 +40,14 @@ const { BaseProviderAdapter } = require('./base.adapter');
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
-// ─── Status normaliser (Toros → internal canonical) ──────────────────────────
-
-/**
- * Map Toros-specific status strings to the canonical platform vocabulary
- * understood by statusMapper.js → ORDER_STATUS.
- *
- * @param {string} torosStatus
- * @returns {'Completed'|'Pending'|'Cancelled'}
- */
-const _normaliseTorosStatus = (torosStatus) => {
-    switch (String(torosStatus ?? '').toLowerCase().trim()) {
-        case 'completed':
-        case 'success':
-        case 'done':
-            return 'Completed';
-
-        case 'processing':
-        case 'pending':
-        case 'in_progress':
-        case 'in progress':
-        case 'queued':
-            return 'Pending';
-
-        case 'failed':
-        case 'rejected':
-        case 'cancelled':
-        case 'canceled':
-        case 'error':
-        default:
-            return 'Cancelled';
-    }
-};
-
-// ─── Axios client factory ─────────────────────────────────────────────────────
+// ─── HTTP client factory ──────────────────────────────────────────────────────
 
 const _buildClient = (baseURL, token, timeoutMs = DEFAULT_TIMEOUT_MS) => {
     const client = axios.create({
         baseURL,
         timeout: timeoutMs,
         headers: {
-            'Authorization': `Bearer ${token}`,
+            'api-token': token,
             'Content-Type': 'application/json',
             'Accept': 'application/json',
         },
@@ -125,12 +93,14 @@ class TorosfonAdapter extends BaseProviderAdapter {
     // ── Product Catalogue ─────────────────────────────────────────────────────
 
     /**
-     * GET /api/products
+     * GET /api/AllProducts
      *
-     * Toros may return:
-     *   { data: [...] }  or  { products: [...] }  or  plain array
+     * Returns normalised ProviderProductDTOs.
      *
-     * Each item: { id, name, price, min_order, max_order, active }
+     * Expected response shapes:
+     *   [ { id, product_name, product_price, min, max }, ... ]  – plain array
+     *   { data: [...] }                                          – wrapped in .data
+     *   { products: [...] }                                      – wrapped in .products
      *
      * @returns {Promise<ProviderProductDTO[]>}
      */
@@ -138,15 +108,15 @@ class TorosfonAdapter extends BaseProviderAdapter {
         const { data } = await this._client.get('/api/AllProducts');
         const list = Array.isArray(data)
             ? data
-            : (data.data ?? data.products ?? data.items ?? []);
+            : (data.data ?? data.products ?? data.services ?? []);
 
         return list.map((item) => this._validateDTO({
-            externalProductId: String(item.id ?? item.product_id ?? item.code),
-            rawName: String(item.name ?? item.title ?? item.label ?? 'Unknown'),
-            rawPrice: parseFloat(item.price ?? item.cost ?? item.rate ?? 0),
-            minQty: parseInt(item.min_order ?? item.min ?? item.minimum ?? 1, 10),
-            maxQty: parseInt(item.max_order ?? item.max ?? item.maximum ?? 9999, 10),
-            isActive: item.active !== false && item.status !== 'inactive',
+            externalProductId: String(item.id ?? item.product_id ?? item.service ?? item.code),
+            rawName: String(item.product_name ?? item.name ?? item.product_name_translated ?? item.title ?? item.service_name ?? 'Unknown'),
+            rawPrice: parseFloat(item.product_price ?? item.rate ?? item.price ?? item.cost ?? 0),
+            minQty: parseInt(item.min ?? item.min_qty ?? item.min_quantity ?? 1, 10),
+            maxQty: parseInt(item.max ?? item.max_qty ?? item.max_quantity ?? 9999, 10),
+            isActive: item.active !== false && item.is_active !== false && item.status !== 'inactive' && item.status !== 'Inactive',
             rawPayload: item,
         }));
     }
@@ -154,28 +124,21 @@ class TorosfonAdapter extends BaseProviderAdapter {
     // ── Order Placement ───────────────────────────────────────────────────────
 
     /**
-     * POST /api/orders
+     * GET /api/PlaceOrder/{productId}/data
+     *       ?amount={amount}
+     *       &player_Id={playerId}
+     *       &referenceId={referenceId}
      *
-     * Request body:
-     *   {
-     *     product_id:   <string|number>,
-     *     quantity:     <number>,
-     *     player_id:    <string>,        // optional
-     *     reference_id: <string>,        // optional — our internal order reference
-     *   }
-     *
-     * Response:
-     *   { id, status, product_id, quantity, created_at, ... }
-     *
-     * placeOrder() NEVER throws — all failures surface as { success: false }.
+     * placeOrder() NEVER throws — failures are returned as { success: false }.
      *
      * @param {Object}        params
-     * @param {string|number} params.productId         — provider's externalProductId
-     * @param {number}        params.amount             — quantity
-     * @param {string}        [params.playerId]
-     * @param {string}        [params.referenceId]
-     * @param {string|number} [params.externalProductId] — alias (compat)
-     * @param {number}        [params.quantity]           — alias (compat)
+     * @param {string|number} params.productId        - provider's product ID
+     * @param {number}        params.amount            - order quantity / units
+     * @param {string}        [params.playerId]        - player / account ID
+     * @param {string}        [params.referenceId]     - our internal reference
+     * @param {string|number} [params.externalProductId] - alias for productId
+     * @param {number}        [params.quantity]           - alias for amount
+     *
      * @returns {Promise<PlaceOrderResult>}
      */
     async placeOrder(params) {
@@ -185,41 +148,49 @@ class TorosfonAdapter extends BaseProviderAdapter {
         const referenceId = params.referenceId ?? '';
 
         try {
-            const body = {
-                product_id: productId,
-                quantity: amount,
-                ...(playerId && { player_id: playerId }),
-                ...(referenceId && { reference_id: referenceId }),
-            };
+            const { data } = await this._client.get(
+                `/api/PlaceOrder/${encodeURIComponent(productId)}/data`,
+                {
+                    params: {
+                        amount,
+                        player_Id: playerId,
+                        referenceId,
+                    },
+                }
+            );
 
-            const { data } = await this._client.post('/api/orders', body);
-
-            // Explicit API-level rejection
-            if (data.success === false || data.status === 'error') {
+            // Check for explicit API-level failure (success: false in body)
+            if (data.success === false) {
                 return {
                     success: false,
                     providerOrderId: null,
                     providerStatus: 'Cancelled',
                     rawResponse: data,
-                    errorMessage: data.message ?? data.error ?? 'Toros rejected the order',
+                    errorMessage: data.message ?? data.error ?? 'Provider rejected the order',
                 };
             }
 
-            const providerOrderId = data.id ?? data.order_id ?? data.orderId ?? null;
+            // Extract order ID from various possible field names
+            const providerOrderId = data.order
+                ?? data.order_id
+                ?? data.orderId
+                ?? data.id
+                ?? null;
+
             if (!providerOrderId) {
                 return {
                     success: false,
                     providerOrderId: null,
                     providerStatus: 'Cancelled',
                     rawResponse: data,
-                    errorMessage: 'Toros returned no order id',
+                    errorMessage: data.error ?? data.message ?? 'Provider returned no order ID',
                 };
             }
 
             return {
                 success: true,
                 providerOrderId: parseInt(String(providerOrderId), 10),
-                providerStatus: _normaliseTorosStatus(data.status),
+                providerStatus: data.status ?? 'Pending',
                 rawResponse: data,
                 errorMessage: null,
             };
@@ -238,31 +209,45 @@ class TorosfonAdapter extends BaseProviderAdapter {
     // ── Order Status ──────────────────────────────────────────────────────────
 
     /**
-     * GET /api/orders/{orderId}
+     * GET /api/CheckOrder?order_id={orderId}
      *
-     * Response: { id, status, ... }
+     * Checks the current status of a single provider order.
      *
      * @param {number|string} orderId
      * @returns {Promise<OrderStatusResult>}
      */
     async checkOrder(orderId) {
-        const { data } = await this._client.get(`/api/orders/${encodeURIComponent(orderId)}`);
+        const endpoint = '/api/CheckOrder';
+        const params = { order_id: orderId };
+
+        console.log(`[Toros] checkOrder → GET ${this.provider.baseUrl}${endpoint}`, {
+            params,
+            headers: { 'api-token': '***' },
+        });
+
+        const { data } = await this._client.get(endpoint, { params });
+
+        console.log(`[Toros] checkOrder ← raw response:`, JSON.stringify(data));
+
+        const providerStatus = data.status ?? 'Pending';
         return {
-            providerOrderId: parseInt(String(data.id ?? orderId), 10),
-            providerStatus: _normaliseTorosStatus(data.status),
+            providerOrderId: parseInt(String(orderId), 10),
+            providerStatus,
+            unifiedStatus: this.toUnifiedStatus(providerStatus),
             rawResponse: data,
         };
     }
 
     /**
-     * POST /api/orders/batch-status
+     * GET /api/CheckListOrders?orders=[1,2,3]
      *
-     * Request body: { order_ids: [1, 2, 3] }
+     * Batch status check — more efficient than N×checkOrder().
      *
-     * Response:
-     *   [{ id, status, ... }, ...]
-     *     OR
-     *   { orders: [{ id, status, ... }, ...] }
+     * Expected response shape (object map):
+     *   {
+     *     "12345": { status: "Completed", charge: "2.00", ... },
+     *     "12346": { status: "Pending",   charge: "1.50", ... }
+     *   }
      *
      * @param {Array<number|string>} orderIds
      * @returns {Promise<OrderStatusResult[]>}
@@ -270,14 +255,14 @@ class TorosfonAdapter extends BaseProviderAdapter {
     async checkOrders(orderIds) {
         if (!orderIds?.length) return [];
 
-        const { data } = await this._client.post('/api/orders/batch-status', {
-            order_ids: orderIds,
+        const { data } = await this._client.get('/api/CheckListOrders', {
+            params: { orders: JSON.stringify(orderIds) },
         });
 
-        const list = Array.isArray(data) ? data : (data.orders ?? data.data ?? []);
-        return list.map((item) => ({
-            providerOrderId: parseInt(String(item.id ?? item.order_id), 10),
-            providerStatus: _normaliseTorosStatus(item.status),
+        // Normalise object-map → array
+        return Object.entries(data).map(([id, item]) => ({
+            providerOrderId: parseInt(id, 10),
+            providerStatus: item.status ?? 'Pending',
             rawResponse: item,
         }));
     }
@@ -285,12 +270,14 @@ class TorosfonAdapter extends BaseProviderAdapter {
     // ── Account / Balance ─────────────────────────────────────────────────────
 
     /**
-     * GET /api/account/balance
+     * GET /api/GetMyInfo
      *
-     * @returns {Promise<Object>}
+     * Returns account details (balance, plan, username, etc.).
+     *
+     * @returns {Promise<Object>} raw provider response body
      */
     async getBalance() {
-        const { data } = await this._client.get('/api/account/balance');
+        const { data } = await this._client.get('/api/GetMyInfo');
         return data;
     }
 }

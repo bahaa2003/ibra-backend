@@ -78,7 +78,8 @@ const resetUserPassword = catchAsync(async (req, res) => {
 
 // PATCH /admin/users/:id/avatar
 const updateUserAvatar = catchAsync(async (req, res) => {
-    const user = await svc.updateUserAvatar(req.params.id, req.body.avatar, req.user._id);
+    const relativePath = req.file ? `/uploads/avatars/${req.file.filename}` : null;
+    const user = await svc.updateUserAvatar(req.params.id, relativePath, req.user._id);
     sendSuccess(res, { user }, 'User avatar updated');
 });
 

@@ -186,6 +186,65 @@ class BaseProviderAdapter {
             || this.provider.effectiveToken
             || null;
     }
+
+    /**
+     * Convert a provider-specific status string to the unified platform status.
+     *
+     * @param {string} providerStatus
+     * @returns {'COMPLETED'|'PENDING'|'FAILED'}
+     */
+    toUnifiedStatus(providerStatus) {
+        return toUnifiedStatus(providerStatus);
+    }
 }
 
-module.exports = { BaseProviderAdapter };
+// ─── Unified Status Constants ────────────────────────────────────────────────
+
+const UNIFIED_STATUS = Object.freeze({
+    COMPLETED: 'COMPLETED',
+    PENDING: 'PENDING',
+    FAILED: 'FAILED',
+});
+
+/**
+ * Map any provider-specific status string to the unified status enum.
+ * Handles Royal Crown / Torosfon ('Completed', 'Pending', 'Cancelled')
+ * and Alkasr ('accept', 'wait', 'reject', 'OK', etc.)
+ *
+ * @param {string} raw
+ * @returns {'COMPLETED'|'PENDING'|'FAILED'}
+ */
+const toUnifiedStatus = (raw) => {
+    switch (String(raw ?? '').toLowerCase().trim()) {
+        case 'completed':
+        case 'complete':
+        case 'done':
+        case 'success':
+        case 'accept':
+        case 'accepted':
+        case 'ok':
+            return UNIFIED_STATUS.COMPLETED;
+
+        case 'pending':
+        case 'processing':
+        case 'in_progress':
+        case 'in progress':
+        case 'queued':
+        case 'wait':
+        case 'waiting':
+        case 'in_process':
+            return UNIFIED_STATUS.PENDING;
+
+        case 'cancelled':
+        case 'canceled':
+        case 'cancel':
+        case 'failed':
+        case 'error':
+        case 'reject':
+        case 'rejected':
+        default:
+            return UNIFIED_STATUS.FAILED;
+    }
+};
+
+module.exports = { BaseProviderAdapter, UNIFIED_STATUS, toUnifiedStatus };

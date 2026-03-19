@@ -41,7 +41,8 @@ const {
  * admins pass activeOnly=false to see everything.
  */
 const listProducts = async ({ activeOnly = true, page = 1, limit = 50 } = {}) => {
-    const filter = activeOnly ? { isActive: true } : {};
+    const filter = { deletedAt: null };
+    if (activeOnly) filter.isActive = true;
     const skip = (page - 1) * limit;
 
     const [products, total] = await Promise.all([
@@ -313,6 +314,28 @@ const toggleProductStatus = async (productId) => {
 };
 
 // =============================================================================
+// ADMIN — SOFT DELETE
+// =============================================================================
+
+/**
+ * deleteProduct(productId)
+ *
+ * Soft-delete a product by setting deletedAt + isActive = false.
+ * The product is excluded from all future list queries.
+ * Throws NotFoundError if missing, BusinessRuleError if already deleted.
+ */
+const deleteProduct = async (productId) => {
+    const product = await Product.findById(productId);
+    if (!product) throw new NotFoundError('Product');
+    if (product.deletedAt) throw new BusinessRuleError('Product is already deleted.', 'ALREADY_DELETED');
+
+    product.deletedAt = new Date();
+    product.isActive = false;
+    await product.save();
+    return product;
+};
+
+// =============================================================================
 // INTERNAL — ORDER FULFILLMENT HELPER
 // =============================================================================
 
@@ -341,6 +364,7 @@ module.exports = {
     publishFromProviderProduct,
     updateProduct,
     toggleProductStatus,
+    deleteProduct,
     getExternalProductId,
 
     // Canonical alias names used by admin catalog API

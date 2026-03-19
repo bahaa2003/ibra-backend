@@ -7,22 +7,23 @@
  *
  * ─── API Overview ─────────────────────────────────────────────────────────────
  *  Base URL    : provider.baseUrl  (e.g. https://alkasr-vip.com)
- *  Auth        : X-API-Key: <token>  header on every request
+ *  Auth        : api-token: <token>  header on every request
  *
- *  GET  /services                               — fetch product/service catalogue
- *  POST /order/create                           — place a new order
- *  GET  /order/status?order_id={id}             — check single order
- *  POST /order/status/bulk                      — bulk check  { order_ids: [1,2,3] }
- *  GET  /account/info                           — account info + balance
+ *  GET  /client/api/products                         — fetch product catalogue
+ *  GET  /client/api/newOrder/{productId}/params
+ *             ?qty={amount}
+ *             &playerId={playerId}
+ *             &order_uuid={uuidv4}                   — place a new order (idempotent)
+ *  GET  /client/api/check?orders=[id1,id2]           — check order status (single or batch)
+ *  GET  /client/api/profile                          — account info + balance
  *
  * ─── Status Vocabulary ────────────────────────────────────────────────────────
- *  Alkasr uses entirely different status vocabulary:
- *
  *  Alkasr      → Internal platform canonical
  *  accept      → Completed
  *  accepted    → Completed
  *  success     → Completed
  *  done        → Completed
+ *  OK          → Completed  (placeOrder success indicator)
  *
  *  wait        → Pending
  *  waiting     → Pending
@@ -48,6 +49,7 @@
  */
 
 const axios = require('axios');
+const crypto = require('crypto');
 const { BaseProviderAdapter } = require('./base.adapter');
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -66,6 +68,7 @@ const _normaliseAlkasrStatus = (alkasrStatus) => {
         case 'accept':
         case 'accepted':
         case 'success':
+        case 'ok':
         case 'done':
         case 'complete':
         case 'completed':
@@ -145,62 +148,45 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
     // ── Product Catalogue ─────────────────────────────────────────────────────
 
     /**
-     * GET /services
+     * GET /client/api/products
      *
-     * Alkasr may return:
-     *   { services: [...] }  or  { data: [...] }  or  plain array
-     *
-     * Each item: { service_id, service_name, cost_per_unit, min, max, is_active }
+     * Response is an array of products:
+     *   [ { id, name, price, qty_values: { min, max } }, ... ]
      *
      * @returns {Promise<ProviderProductDTO[]>}
      */
- async getProducts() {
-    const { data } = await this._client.get('/products');
-    const list = Array.isArray(data)
-        ? data
-        : (data.services ?? data.data ?? data.items ?? []);
+    async getProducts() {
+        const { data } = await this._client.get('/client/api/products');
+        const list = Array.isArray(data)
+            ? data
+            : (data.data ?? data.products ?? data.services ?? []);
 
-    return list.map((item) => this._validateDTO({
-        externalProductId: String(
-            item.service_id ?? item.id ?? item.product_id ?? item.code
-        ),
-        rawName: String(
-            item.service_name ?? item.name ?? item.title ?? 'Unknown'
-        ),
-        rawPrice: parseFloat(
-            item.cost_per_unit ?? item.price ?? item.rate ?? item.cost ?? 0
-        ),
-        minQty: parseInt(item.qty_values?.min ?? item.min ?? item.min_quantity ?? item.minimum ?? 1, 10),
-        
-        maxQty: parseInt(item.qty_values?.max ?? item.max ?? item.max_quantity ?? item.maximum ?? 9999, 10),
-        
-        isActive: item.is_active !== false
-            && item.active !== false
-            && item.available !== false
-            && item.status !== 'inactive',
-        rawPayload: item,
-    }));
-}
+        return list.map((item) => this._validateDTO({
+            externalProductId: String(item.id ?? item.product_id ?? item.service_id ?? item.code),
+            rawName: String(item.name ?? item.product_name ?? item.service_name ?? item.title ?? 'Unknown'),
+            rawPrice: parseFloat(item.price ?? item.cost ?? item.rate ?? item.cost_per_unit ?? 0),
+            minQty: parseInt(item.qty_values?.min ?? item.min ?? item.min_quantity ?? 1, 10),
+            maxQty: parseInt(item.qty_values?.max ?? item.max ?? item.max_quantity ?? 9999, 10),
+            isActive: item.is_active !== false
+                && item.active !== false
+                && item.available !== false
+                && item.status !== 'inactive',
+            rawPayload: item,
+        }));
+    }
 
     // ── Order Placement ───────────────────────────────────────────────────────
 
     /**
-     * POST /order/create
+     * GET /client/api/newOrder/{productId}/params
+     *       ?qty={amount}
+     *       &playerId={playerId}
+     *       &order_uuid={uuidv4}
      *
-     * Request body:
-     *   {
-     *     service_id:  <string|number>,
-     *     qty:         <number>,
-     *     uid:         <string>,        // player / account ID (optional)
-     *     ref:         <string>,        // our internal reference (optional)
-     *   }
+     * A UUIDv4 is generated and appended as `order_uuid` query parameter
+     * to ensure idempotency.
      *
-     * Response:
-     *   {
-     *     order_id: <number>,
-     *     status:   'wait' | 'accept' | 'reject',
-     *     ...
-     *   }
+     * Success response: { status: "OK", data: { order_id, status, ... } }
      *
      * placeOrder() NEVER throws — all failures surface as { success: false }.
      *
@@ -217,30 +203,36 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
         const productId = params.productId ?? params.externalProductId;
         const amount = params.amount ?? params.quantity;
         const playerId = params.playerId ?? '';
-        const referenceId = params.referenceId ?? '';
+        const orderUuid = crypto.randomUUID();
 
         try {
-            const body = {
-                service_id: productId,
-                qty: amount,
-                ...(playerId && { uid: playerId }),
-                ...(referenceId && { ref: referenceId }),
-            };
+            const { data } = await this._client.get(
+                `/client/api/newOrder/${encodeURIComponent(productId)}/params`,
+                {
+                    params: {
+                        qty: amount,
+                        playerId,
+                        order_uuid: orderUuid,
+                    },
+                }
+            );
 
-            const { data } = await this._client.post('/order/create', body);
-
-            // Explicit API-level rejection
-            if (data.success === false || _normaliseAlkasrStatus(data.status) === 'Cancelled') {
+            // Check for explicit API-level failure
+            const topStatus = String(data.status ?? '').toUpperCase();
+            if (topStatus !== 'OK' && data.success === false) {
                 return {
                     success: false,
                     providerOrderId: null,
                     providerStatus: 'Cancelled',
                     rawResponse: data,
-                    errorMessage: data.message ?? data.msg ?? data.error ?? 'AlkasrVip rejected the order',
+                    errorMessage: data.message ?? data.error ?? data.msg ?? 'AlkasrVip rejected the order',
                 };
             }
 
-            const providerOrderId = data.order_id ?? data.id ?? data.orderId ?? null;
+            // Extract order ID from data.order_id
+            const innerData = data.data ?? data;
+            const providerOrderId = innerData.order_id ?? innerData.id ?? innerData.orderId ?? null;
+
             if (!providerOrderId) {
                 return {
                     success: false,
@@ -254,7 +246,7 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
             return {
                 success: true,
                 providerOrderId: parseInt(String(providerOrderId), 10),
-                providerStatus: _normaliseAlkasrStatus(data.status),
+                providerStatus: _normaliseAlkasrStatus(innerData.status ?? data.status),
                 rawResponse: data,
                 errorMessage: null,
             };
@@ -273,34 +265,44 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
     // ── Order Status ──────────────────────────────────────────────────────────
 
     /**
-     * GET /order/status?order_id={id}
+     * GET /client/api/check?orders=[orderId]
      *
-     * Response: { order_id, status, ... }
+     * Note: IDs must be enclosed in brackets in the query string.
      *
      * @param {number|string} orderId
      * @returns {Promise<OrderStatusResult>}
      */
     async checkOrder(orderId) {
-        const { data } = await this._client.get('/order/status', {
-            params: { order_id: orderId },
+        const endpoint = '/client/api/check';
+        const params = { orders: JSON.stringify([orderId]) };
+
+        console.log(`[AlkasrVip] checkOrder → GET ${this.provider.baseUrl}${endpoint}`, {
+            params,
+            headers: { 'api-token': '***' },
         });
 
+        const { data } = await this._client.get(endpoint, { params });
+
+        console.log(`[AlkasrVip] checkOrder ← raw response:`, JSON.stringify(data));
+
+        // Response may be an array, object map, or wrapped in .data
+        const result = Array.isArray(data)
+            ? data[0]
+            : (data.data?.[0] ?? data[String(orderId)] ?? data);
+
+        const providerStatus = _normaliseAlkasrStatus(result?.status);
         return {
-            providerOrderId: parseInt(String(data.order_id ?? orderId), 10),
-            providerStatus: _normaliseAlkasrStatus(data.status),
+            providerOrderId: parseInt(String(result?.order_id ?? orderId), 10),
+            providerStatus,
+            unifiedStatus: this.toUnifiedStatus(result?.status),
             rawResponse: data,
         };
     }
 
     /**
-     * POST /order/status/bulk
+     * GET /client/api/check?orders=[id1,id2,id3]
      *
-     * Request body: { order_ids: [1, 2, 3] }
-     *
-     * Response:
-     *   { orders: [{ order_id, status, ... }, ...] }
-     *     OR
-     *   plain array
+     * Note: IDs must be enclosed in brackets in the query string.
      *
      * @param {Array<number|string>} orderIds
      * @returns {Promise<OrderStatusResult[]>}
@@ -308,13 +310,31 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
     async checkOrders(orderIds) {
         if (!orderIds?.length) return [];
 
-        const { data } = await this._client.post('/order/status/bulk', {
-            order_ids: orderIds,
+        const { data } = await this._client.get('/client/api/check', {
+            params: { orders: JSON.stringify(orderIds) },
         });
 
-        const list = Array.isArray(data) ? data : (data.orders ?? data.data ?? []);
-        return list.map((item) => ({
-            providerOrderId: parseInt(String(item.order_id ?? item.id), 10),
+        // Response may be an array or object map
+        if (Array.isArray(data)) {
+            return data.map((item) => ({
+                providerOrderId: parseInt(String(item.order_id ?? item.id), 10),
+                providerStatus: _normaliseAlkasrStatus(item.status),
+                rawResponse: item,
+            }));
+        }
+
+        const list = data.data ?? data;
+        if (Array.isArray(list)) {
+            return list.map((item) => ({
+                providerOrderId: parseInt(String(item.order_id ?? item.id), 10),
+                providerStatus: _normaliseAlkasrStatus(item.status),
+                rawResponse: item,
+            }));
+        }
+
+        // Object map: { "123": { status: "..." }, ... }
+        return Object.entries(list).map(([id, item]) => ({
+            providerOrderId: parseInt(id, 10),
             providerStatus: _normaliseAlkasrStatus(item.status),
             rawResponse: item,
         }));
@@ -323,12 +343,14 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
     // ── Account / Balance ─────────────────────────────────────────────────────
 
     /**
-     * GET /account/info
+     * GET /client/api/profile
      *
-     * @returns {Promise<Object>}
+     * Returns account details / balance info.
+     *
+     * @returns {Promise<Object>} raw provider response data
      */
     async getBalance() {
-        const { data } = await this._client.get('/account/info');
+        const { data } = await this._client.get('/client/api/profile');
         return data;
     }
 }

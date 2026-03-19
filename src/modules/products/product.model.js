@@ -175,6 +175,12 @@ const productSchema = new mongoose.Schema(
             default: true,
         },
 
+        /** Soft-delete timestamp. Null = not deleted. */
+        deletedAt: {
+            type: Date,
+            default: null,
+        },
+
         executionType: {
             type: String,
             enum: Object.values(EXECUTION_TYPES),
@@ -356,6 +362,7 @@ productSchema.index({ provider: 1, isActive: 1 });        // provider product li
 productSchema.index({ providerProduct: 1 });               // price-sync: find Products by ProviderProduct
 productSchema.index({ pricingMode: 1, provider: 1 });     // price-sync: find 'sync' mode candidates
 productSchema.index({ isActive: 1, displayOrder: 1 });    // user-facing product list
+productSchema.index({ deletedAt: 1 }, { sparse: true });   // fast filter for non-deleted products
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

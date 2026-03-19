@@ -260,13 +260,23 @@ class RoyalCrownAdapter extends BaseProviderAdapter {
      * @returns {Promise<OrderStatusResult>}
      */
     async checkOrder(orderId) {
-        const { data } = await this._client.get('/api/CheckOrder', {
-            params: { order_id: orderId },
+        const endpoint = '/api/CheckOrder';
+        const params = { order_id: orderId };
+
+        console.log(`[RoyalCrown] checkOrder → GET ${this.provider.baseUrl}${endpoint}`, {
+            params,
+            headers: { 'api-token': '***' },
         });
 
+        const { data } = await this._client.get(endpoint, { params });
+
+        console.log(`[RoyalCrown] checkOrder ← raw response:`, JSON.stringify(data));
+
+        const providerStatus = data.status ?? 'Pending';
         return {
             providerOrderId: parseInt(String(orderId), 10),
-            providerStatus: data.status ?? 'Pending',
+            providerStatus,
+            unifiedStatus: this.toUnifiedStatus(providerStatus),
             rawResponse: data,
         };
     }

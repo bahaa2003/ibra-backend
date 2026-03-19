@@ -76,8 +76,11 @@ const authenticate = require('../../shared/middlewares/authenticate');
 const authorize = require('../../shared/middlewares/authorize');
 const catchAsync = require('../../shared/utils/catchAsync');
 const { sendSuccess, sendPaginated } = require('../../shared/utils/apiResponse');
+const { createUpload } = require('../../shared/middlewares/upload');
 
 const { validateBody, validateQuery, schemas } = require('./admin.validation');
+
+const avatarUpload = createUpload('avatars');
 
 // ── Controllers ───────────────────────────────────────────────────────────────
 const usersCtrl = require('./admin.users.controller');
@@ -85,6 +88,7 @@ const providersCtrl = require('./admin.providers.controller');
 const ordersCtrl = require('./admin.orders.controller');
 const walletCtrl = require('./admin.wallet.controller');
 const settingsCtrl = require('./admin.settings.controller');
+const statsCtrl = require('./admin.stats.controller');
 const categoriesCtrl = require('../categories/category.controller');
 const categoryValidation = require('../categories/category.validation');
 
@@ -101,6 +105,12 @@ router.use(authenticate);
 router.use(authorize('ADMIN'));
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD STATISTICS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+router.get('/stats', statsCtrl.getDashboardStats);
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // USERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -115,7 +125,7 @@ router.patch('/users/:id/reject', usersCtrl.rejectUser);
 router.patch('/users/:id/role', validateBody(schemas.updateUserRole), usersCtrl.updateUserRole);
 router.patch('/users/:id/currency', validateBody(schemas.updateUserCurrency), usersCtrl.updateUserCurrency);
 router.post('/users/:id/reset-password', validateBody(schemas.resetUserPassword), usersCtrl.resetUserPassword);
-router.patch('/users/:id/avatar', validateBody(schemas.updateUserAvatar), usersCtrl.updateUserAvatar);
+router.patch('/users/:id/avatar', avatarUpload.single('avatar'), usersCtrl.updateUserAvatar);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PROVIDERS
@@ -127,6 +137,7 @@ router.post('/providers', validateBody(schemas.createProvider), providersCtrl.cr
 router.get('/providers/:id/balance', providersCtrl.getProviderBalance);
 router.get('/providers/:id/products', providersCtrl.getProviderLiveProducts);
 router.post('/providers/:id/test-connection', providersCtrl.testProviderConnection);
+router.get('/providers/:id/check-order', providersCtrl.checkProviderOrder);
 router.get('/providers/:providerId/products/:externalProductId/price', providersCtrl.getProductPrice);
 router.patch('/providers/:id/toggle', providersCtrl.toggleProvider);
 router.get('/providers/:id', providersCtrl.getProviderById);
@@ -238,8 +249,8 @@ router.patch('/groups/:id', validateBody(schemas.updateGroup), catchAsync(async 
 }));
 
 router.delete('/groups/:id', catchAsync(async (req, res) => {
-    const group = await groupSvc.updateGroup(req.params.id, { isActive: false });
-    sendSuccess(res, { group }, 'Group deactivated');
+    const group = await groupSvc.deleteGroup(req.params.id);
+    sendSuccess(res, { group }, 'Group deleted');
 }));
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -70,6 +70,12 @@ const getProductPrice = catchAsync(async (req, res) => {
     sendSuccess(res, data, data.found ? 'Price retrieved' : 'Product not found in provider catalog');
 });
 
+// GET /admin/providers/:id/check-order?orderId=123
+const checkProviderOrder = catchAsync(async (req, res) => {
+    const data = await svc.checkProviderOrder(req.params.id, req.query.orderId);
+    sendSuccess(res, data, 'Order status retrieved');
+});
+
 module.exports = {
     listProviders,
     getProviderById,
@@ -81,4 +87,5 @@ module.exports = {
     getProviderLiveProducts,
     testProviderConnection,
     getProductPrice,
+    checkProviderOrder,
 };

@@ -71,14 +71,14 @@ const listAllProviderProducts = catchAsync(async (req, res) => {
  * Query: ?search= &page= &limit= &includeInactive=
  */
 const listProviderProducts = catchAsync(async (req, res) => {
-    const { search, page = 1, limit = 50, includeInactive } = req.query;
+    const { search, page = 1, limit = 600, includeInactive } = req.query;
 
     const filter = { provider: req.params.providerId };
     if (!includeInactive || includeInactive === 'false') filter.isActive = true;
 
     const { products, pagination } = await ppService.listProviderProducts(filter, {
         page: parseInt(page, 10),
-        limit: Math.min(parseInt(limit, 10), 200),
+        limit: Math.min(parseInt(limit, 10), 1000),
         search,
     });
 
@@ -280,6 +280,15 @@ const toggleProduct = catchAsync(async (req, res) => {
     sendSuccess(res, product, `Product ${product.isActive ? 'activated' : 'deactivated'}.`);
 });
 
+/**
+ * DELETE /admin/products/:id
+ * Soft-delete a platform product (sets deletedAt + isActive = false).
+ */
+const deleteProduct = catchAsync(async (req, res) => {
+    const product = await productService.deleteProduct(req.params.id);
+    sendSuccess(res, product, 'Product deleted.');
+});
+
 module.exports = {
     // Sync
     syncProvider,
@@ -296,4 +305,5 @@ module.exports = {
     createProductFromProvider,
     updateProduct,
     toggleProduct,
+    deleteProduct,
 };

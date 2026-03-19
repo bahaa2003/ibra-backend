@@ -38,6 +38,12 @@ const groupSchema = new mongoose.Schema(
             type: Boolean,
             default: true,
         },
+
+        /** Soft-delete timestamp. Null = not deleted. */
+        deletedAt: {
+            type: Date,
+            default: null,
+        },
     },
     {
         timestamps: true,

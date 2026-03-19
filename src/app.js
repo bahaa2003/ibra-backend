@@ -10,6 +10,7 @@ const morgan = require('morgan');
 const config = require('./config/config');
 const globalErrorHandler = require('./shared/errors/errorHandler');
 const { AppError } = require('./shared/errors/AppError');
+const { apiLimiter } = require('./shared/middlewares/rateLimiter');
 
 // ── Module Routers ────────────────────────────────────────────────────────────
 const authRoutes = require('./modules/auth/auth.routes');
@@ -25,6 +26,7 @@ const adminCatalogRoutes = require('./modules/admin/admin.catalog.routes');
 const adminRoutes = require('./modules/admin/admin.routes');    // ← dashboard router
 const meRoutes = require('./modules/me/me.routes');          // ← user panel
 const currencyRoutes = require('./modules/currency/currency.routes');
+const uploadRoutes = require('./shared/routes/upload.routes');
 const path = require('path');
 // Seed default settings on startup (idempotent, no-op if already seeded)
 require('./modules/admin/setting.model').seedDefaultSettings().catch(() => { });
@@ -42,8 +44,8 @@ app.use(
 );
 
 // ── Request Parsing ───────────────────────────────────────────────────────────
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ── Logging ───────────────────────────────────────────────────────────────────
 if (config.env !== 'test') {
@@ -74,6 +76,9 @@ app.get('/health', (req, res) => {
 
 // ── API Routes ────────────────────────────────────────────────────────────────
 const API_PREFIX = '/api';
+
+// Apply general rate limiter to all API routes (500 req / 15 min per IP)
+app.use(API_PREFIX, apiLimiter);
 
 app.use(`${API_PREFIX}/auth`, authRoutes);
 app.use(`${API_PREFIX}/users`, userRoutes);
@@ -106,8 +111,8 @@ app.use(`${API_PREFIX}/admin`, adminRoutes);
 app.use(`${API_PREFIX}/admin`, adminCatalogRoutes);
 app.use(`${API_PREFIX}/admin/currencies`, currencyRoutes);
 
-// ── Static Files ──────────────────────────────────────────────────────────────
-app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
+// ── Generic Upload ────────────────────────────────────────────────────────────
+app.use(`${API_PREFIX}/upload`, uploadRoutes);
 
 
 // ── 404 Handler ────────────────────────────────────────────────────────────────

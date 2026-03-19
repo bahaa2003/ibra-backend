@@ -147,6 +147,10 @@ const _attemptCreateOrder = async (
         const pricing = await calculateUserPrice(userId, product.basePrice, session);
         const usdTotalPrice = parseFloat((pricing.finalPrice * qty).toFixed(2));
 
+        // ── 3a. Profit Calculation (USD) ────────────────────────────────────────
+        // Profit = markup portion only = (markedUpPrice - basePrice) × quantity
+        const profitUsd = parseFloat(((pricing.finalPrice - pricing.basePrice) * qty).toFixed(2));
+
         // ── 3b. Currency Conversion ────────────────────────────────────────────
         // Fetch the user's preferred currency (within the session for consistency).
         // For USD users this is a no-op (rate = 1, finalAmount = usdTotalPrice).
@@ -183,6 +187,7 @@ const _attemptCreateOrder = async (
             markupPercentageSnapshot: pricing.markupPercentage,
             finalPriceCharged: pricing.finalPrice,
             groupIdSnapshot: pricing.groupId,
+            profitUsd,
             unitPrice: pricing.finalPrice,
             totalPrice: chargedAmount,   // legacy field — now equals chargedAmount
             walletDeducted,

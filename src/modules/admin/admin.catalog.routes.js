@@ -44,6 +44,7 @@ const {
     createProductFromProvider,
     updateProduct,
     toggleProduct,
+    deleteProduct,
 } = require('./admin.catalog.controller');
 
 const router = express.Router();
@@ -76,6 +77,7 @@ router.get('/products', listProducts);
 router.post('/products', createProduct);                   // ← manual product creation
 router.post('/products/from-provider', createProductFromProvider);
 router.patch('/products/:id/toggle', toggleProduct);
+router.delete('/products/:id', deleteProduct);
 router.patch('/products/:id', updateProduct);
 
 module.exports = router;

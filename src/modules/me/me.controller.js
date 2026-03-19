@@ -184,13 +184,19 @@ const placeOrder = catchAsync(async (req, res) => {
 
 /**
  * Public product catalogue for authenticated customers.
- * Customers see only active products.
- * Query: search, page, limit
+ * Prices follow the full pipeline:
+ *   1. Base Price (USD from provider)
+ *   2. Group Markup: markedUpUSD = basePrice × (1 + group.percentage / 100)
+ *   3. Currency Conversion: displayPrice = markedUpUSD × userCurrencyRate
  */
 const getProducts = catchAsync(async (req, res) => {
     const page = parsePage(req.query.page);
     const limit = parseLimit(req.query.limit);
     const { Product } = require('../products/product.model');
+    const Group = require('../groups/group.model');
+    const { getConversionRate } = require('../../services/currencyConverter.service');
+    const { usdToLocal } = require('../../shared/utils/currencyMath');
+    const { calculateFinalPrice } = require('../orders/pricing.service');
 
     const filter = { isActive: true };
     if (req.query.search) {
@@ -211,20 +217,67 @@ const getProducts = catchAsync(async (req, res) => {
         Product.countDocuments(filter),
     ]);
 
-    sendPaginated(res, products, { page, limit, total, pages: Math.ceil(total / limit) }, 'Products retrieved.');
+    // ── 1. Resolve user's group markup ────────────────────────────────────────
+    let markupPercentage = 0;
+    if (req.user.groupId) {
+        const group = await Group.findById(req.user.groupId).select('percentage isActive').lean();
+        if (group?.isActive) markupPercentage = group.percentage ?? 0;
+    }
+
+    // ── 2. Resolve user's currency rate ───────────────────────────────────────
+    const userCurrency = req.user.currency || 'USD';
+    const rate = await getConversionRate(userCurrency);
+
+    // ── 3. Apply pipeline: Base → Markup → Currency ───────────────────────────
+    const converted = products.map((p) => {
+        const markedUpUSD = calculateFinalPrice(p.basePrice, markupPercentage);
+        return {
+            ...p,
+            markedUpPriceUSD: markedUpUSD,
+            displayPrice: usdToLocal(markedUpUSD, rate),
+            displayCurrency: userCurrency,
+        };
+    });
+
+    sendPaginated(res, converted, { page, limit, total, pages: Math.ceil(total / limit) }, 'Products retrieved.');
 });
 
 /**
- * Single product detail — customers see only active products.
+ * Single product detail — full pricing pipeline applied.
  */
 const getProduct = catchAsync(async (req, res) => {
     const { Product } = require('../products/product.model');
+    const Group = require('../groups/group.model');
+    const { getConversionRate } = require('../../services/currencyConverter.service');
+    const { usdToLocal } = require('../../shared/utils/currencyMath');
+    const { calculateFinalPrice } = require('../orders/pricing.service');
+
     const product = await Product.findOne({ _id: req.params.id, isActive: true })
         .select('-providerProduct')
         .lean();
 
     if (!product) throw new NotFoundError('Product');
-    sendSuccess(res, product);
+
+    // ── 1. Group markup ───────────────────────────────────────────────────────
+    let markupPercentage = 0;
+    if (req.user.groupId) {
+        const group = await Group.findById(req.user.groupId).select('percentage isActive').lean();
+        if (group?.isActive) markupPercentage = group.percentage ?? 0;
+    }
+
+    // ── 2. Currency rate ──────────────────────────────────────────────────────
+    const userCurrency = req.user.currency || 'USD';
+    const rate = await getConversionRate(userCurrency);
+
+    // ── 3. Pipeline: Base → Markup → Currency ─────────────────────────────────
+    const markedUpUSD = calculateFinalPrice(product.basePrice, markupPercentage);
+
+    sendSuccess(res, {
+        ...product,
+        markedUpPriceUSD: markedUpUSD,
+        displayPrice: usdToLocal(markedUpUSD, rate),
+        displayCurrency: userCurrency,
+    });
 });
 
 // =============================================================================

@@ -19,6 +19,7 @@ const { registerValidation, loginValidation } = require('./auth.validation');
 const validate = require('../../shared/middlewares/validate');
 const { body } = require('express-validator');
 const config = require('../../config/config');
+const { authLimiter } = require('../../shared/middlewares/rateLimiter');
 
 const router = Router();
 
@@ -41,14 +42,14 @@ const requireGoogleConfig = (req, res, next) => {
  * @desc   Create a new customer account + send verification email
  * @access Public
  */
-router.post('/register', registerValidation, validate, authController.register);
+router.post('/register', authLimiter, registerValidation, validate, authController.register);
 
 /**
  * @route  POST /api/auth/login
  * @desc   Authenticate user and get JWT
  * @access Public
  */
-router.post('/login', loginValidation, validate, authController.login);
+router.post('/login', authLimiter, loginValidation, validate, authController.login);
 
 // ─── Email Verification ───────────────────────────────────────────────────────
 
@@ -67,6 +68,7 @@ router.get('/verify-email', authController.verifyEmail);
  */
 router.post(
     '/resend-verification',
+    authLimiter,
     [
         body('email')
             .isEmail().withMessage('A valid email address is required.')

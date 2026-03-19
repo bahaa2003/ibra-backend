@@ -209,6 +209,41 @@ const getMyProfile = async (userId) => {
     return user;
 };
 
+/**
+ * Customer: Update own profile (self-service).
+ * Only allows safe fields: name, email, phone, username, password.
+ */
+const updateMyProfile = async (userId, { name, email, phone, username, password }) => {
+    const user = await User.findById(userId);
+    if (!user) throw new NotFoundError('User');
+
+    if (name !== undefined) user.name = name;
+    if (email !== undefined) user.email = email;
+    if (phone !== undefined) user.phone = phone;
+    if (username !== undefined) user.username = username;
+
+    if (password) {
+        // The User model's pre-save hook should hash the password
+        user.password = password;
+    }
+
+    await user.save();
+    return user.toSafeObject ? user.toSafeObject() : user.toObject();
+};
+
+/**
+ * Customer: Update own avatar (self-service).
+ * Accepts a URL string or null/empty to clear.
+ */
+const updateMyAvatar = async (userId, avatar) => {
+    const user = await User.findById(userId);
+    if (!user) throw new NotFoundError('User');
+
+    user.avatar = avatar || null;
+    await user.save();
+    return user.toSafeObject ? user.toSafeObject() : user.toObject();
+};
+
 module.exports = {
     listUsers,
     getUserById,
@@ -216,4 +251,6 @@ module.exports = {
     rejectUser,
     updateUser,
     getMyProfile,
+    updateMyProfile,
+    updateMyAvatar,
 };

@@ -16,7 +16,8 @@ const { ADMIN_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.con
 // ─── List ──────────────────────────────────────────────────────────────────────
 
 const listProviders = async ({ includeInactive = true } = {}) => {
-    const filter = includeInactive ? {} : { isActive: true };
+    const filter = { deletedAt: null };
+    if (!includeInactive) filter.isActive = true;
     return Provider.find(filter).sort({ name: 1 });
 };
 
@@ -230,6 +231,71 @@ const getProductPrice = async (providerId, externalProductId) => {
     }
 };
 
+// ─── Check Provider Order (Debug) ─────────────────────────────────────────────
+
+/**
+ * Hit the provider adapter's checkOrder() directly and return the result
+ * with unified status. Used by the admin debug/testing modal.
+ *
+ * Error handling / DLQ:
+ *   - Network timeouts, 401/403, 404 → graceful failure with HOLD status
+ *   - Other errors → re-thrown so the controller returns an error response
+ */
+const checkProviderOrder = async (id, orderId) => {
+    const provider = await Provider.findById(id);
+    if (!provider) throw new NotFoundError('Provider');
+    if (!provider.isActive) throw new BusinessRuleError('Provider is inactive.', 'PROVIDER_INACTIVE');
+    if (!orderId) throw new BusinessRuleError('orderId query parameter is required.', 'MISSING_ORDER_ID');
+
+    const adapter = getProviderAdapter(provider);
+
+    try {
+        console.log(`[checkProviderOrder] Checking order ${orderId} via provider "${provider.name}" (${provider.slug})`);
+        const result = await adapter.checkOrder(orderId);
+        console.log(`[checkProviderOrder] Result for order ${orderId}:`, {
+            providerStatus: result.providerStatus,
+            unifiedStatus: result.unifiedStatus,
+        });
+
+        return {
+            provider: provider.name,
+            orderId,
+            ...result,
+        };
+
+    } catch (err) {
+        const httpStatus = err.statusCode ?? err.response?.status;
+        const errMsg = err.message || 'Unknown error';
+
+        console.error(`[checkProviderOrder] FAILED for order ${orderId} via "${provider.name}":`, {
+            httpStatus,
+            message: errMsg,
+        });
+
+        // Determine if this is a DLQ-worthy error (needs manual review)
+        const isTimeout = err.code === 'ECONNABORTED' || /timeout/i.test(errMsg);
+        const isAuthError = httpStatus === 401 || httpStatus === 403;
+        const isNotFound = httpStatus === 404;
+        const needsDLQ = isTimeout || isAuthError || isNotFound;
+
+        return {
+            provider: provider.name,
+            orderId,
+            providerOrderId: null,
+            providerStatus: null,
+            unifiedStatus: 'HOLD',
+            rawResponse: { error: errMsg, httpStatus },
+            // DLQ metadata — frontend can use this to show a warning
+            dlq: needsDLQ,
+            dlqReason: isTimeout ? 'TIMEOUT'
+                : isAuthError ? 'AUTH_ERROR'
+                : isNotFound ? 'ORDER_NOT_FOUND'
+                : 'PROVIDER_ERROR',
+            errorMessage: errMsg,
+        };
+    }
+};
+
 module.exports = {
     listProviders,
     getProviderById,
@@ -241,4 +307,5 @@ module.exports = {
     getProviderLiveProducts,
     testProviderConnection,
     getProductPrice,
+    checkProviderOrder,
 };

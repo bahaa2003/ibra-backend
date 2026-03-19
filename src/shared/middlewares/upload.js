@@ -1,73 +1,113 @@
 'use strict';
 
 /**
- * upload.js — Multer middleware for deposit screenshot / proof uploads.
+ * upload.js — Centralized Multer middleware factory for file uploads.
  *
- * Storage : disk  →  /uploads/deposits/<timestamp>-<random>.<ext>
- * Allowed  : jpg, jpeg, png, webp, pdf
- * Max size : 5 MB
+ * Creates category-specific upload instances that store files to:
+ *   /uploads/<category>/<timestamp>-<random>.<ext>
  *
- * Usage in a route:
+ * Supported categories: avatars, products, categories, payments, deposits
+ *
+ * Usage:
+ *   const { createUpload } = require('../../shared/middlewares/upload');
+ *   const avatarUpload = createUpload('avatars');
+ *   router.patch('/me/avatar', avatarUpload.single('avatar'), handler);
+ *
+ * Legacy default export (backward-compatible for deposits):
+ *   const upload = require('../../shared/middlewares/upload');
  *   router.post('/deposits', upload.single('screenshotProof'), handler);
- *
- * After the middleware runs, `req.file` contains the uploaded file metadata
- * including `req.file.filename` and `req.file.path`.
  */
 
+const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const multer = require('multer');
 const { BusinessRuleError } = require('../errors/AppError');
 
-// ── Storage ───────────────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
-const UPLOAD_DIR = path.join(__dirname, '..', '..', '..', 'uploads', 'deposits');
+const UPLOADS_ROOT = path.join(__dirname, '..', '..', '..', 'uploads');
 
-const storage = multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
-    filename: (_req, file, cb) => {
-        const ts = Date.now();
-        const rnd = Math.random().toString(36).slice(2, 8);
-        const ext = path.extname(file.originalname).toLowerCase();
-        cb(null, `${ts}-${rnd}${ext}`);
-    },
-});
+/** Max file size: 5 MB */
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
 
-// ── File filter ───────────────────────────────────────────────────────────────
-
-const ALLOWED_MIME_TYPES = new Set([
+/**
+ * Allowed MIME types for image uploads.
+ * Deposits additionally allow PDFs (receipts).
+ */
+const IMAGE_MIME_TYPES = new Set([
     'image/jpeg',
     'image/png',
     'image/webp',
-    'application/pdf',
 ]);
 
-const ALLOWED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.pdf']);
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 
-const fileFilter = (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const mimeOk = ALLOWED_MIME_TYPES.has(file.mimetype);
-    const extOk = ALLOWED_EXTENSIONS.has(ext);
+/** Deposits also accept PDFs */
+const DEPOSIT_MIME_TYPES = new Set([...IMAGE_MIME_TYPES, 'application/pdf']);
+const DEPOSIT_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, '.pdf']);
 
-    if (!mimeOk || !extOk) {
-        return cb(
-            new BusinessRuleError(
-                'Only JPG, JPEG, PNG, WebP, and PDF files are accepted.',
-                'INVALID_FILE_TYPE'
-            )
-        );
-    }
-    cb(null, true);
+// ── Factory ───────────────────────────────────────────────────────────────────
+
+/**
+ * Create a configured multer instance for a specific upload category.
+ *
+ * @param {'avatars'|'products'|'categories'|'payments'|'deposits'} category
+ * @returns {multer.Multer} A multer instance ready to use as middleware
+ */
+const createUpload = (category) => {
+    const uploadDir = path.join(UPLOADS_ROOT, category);
+
+    // Ensure directory exists
+    fs.mkdirSync(uploadDir, { recursive: true });
+
+    // Storage: disk with collision-proof filenames
+    const storage = multer.diskStorage({
+        destination: (_req, _file, cb) => cb(null, uploadDir),
+        filename: (_req, file, cb) => {
+            const timestamp = Date.now();
+            const random = crypto.randomBytes(8).toString('hex');
+            const ext = path.extname(file.originalname).toLowerCase();
+            cb(null, `${timestamp}-${random}${ext}`);
+        },
+    });
+
+    // File filter: deposits allow PDFs, everything else is images-only
+    const isDeposit = category === 'deposits';
+    const allowedMimes = isDeposit ? DEPOSIT_MIME_TYPES : IMAGE_MIME_TYPES;
+    const allowedExts = isDeposit ? DEPOSIT_EXTENSIONS : IMAGE_EXTENSIONS;
+
+    const fileFilter = (_req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const mimeOk = allowedMimes.has(file.mimetype);
+        const extOk = allowedExts.has(ext);
+
+        if (!mimeOk || !extOk) {
+            const accepted = isDeposit
+                ? 'JPG, JPEG, PNG, WebP, and PDF'
+                : 'JPG, JPEG, PNG, and WebP';
+            return cb(
+                new BusinessRuleError(
+                    `Only ${accepted} files are accepted.`,
+                    'INVALID_FILE_TYPE'
+                )
+            );
+        }
+        cb(null, true);
+    };
+
+    return multer({
+        storage,
+        fileFilter,
+        limits: {
+            fileSize: MAX_FILE_SIZE,
+            files: 1,
+        },
+    });
 };
 
-// ── Multer instance ───────────────────────────────────────────────────────────
+// ── Exports ───────────────────────────────────────────────────────────────────
 
-const upload = multer({
-    storage,
-    fileFilter,
-    limits: {
-        fileSize: 5 * 1024 * 1024,   // 5 MB
-        files: 1,
-    },
-});
-
-module.exports = upload;
+// Factory for creating category-specific uploaders
+module.exports = createUpload('deposits');   // backward-compatible default
+module.exports.createUpload = createUpload;

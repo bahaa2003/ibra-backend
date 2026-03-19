@@ -33,7 +33,7 @@ const { NotFoundError } = require('../../shared/errors/AppError');
  * @param {string} [opts.search]        - partial text match on rawName / translatedName
  * @returns {Promise<{ products, pagination }>}
  */
-const listProviderProducts = async (filter = {}, { page = 1, limit = 50, search } = {}) => {
+const listProviderProducts = async (filter = {}, { page = 1, limit = 500, search } = {}) => {
     const query = { ...filter };
 
     if (search) {

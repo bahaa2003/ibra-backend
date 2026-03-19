@@ -11,6 +11,18 @@ const getMyProfile = catchAsync(async (req, res) => {
     sendSuccess(res, user, 'Profile retrieved successfully.');
 });
 
+const updateMyProfile = catchAsync(async (req, res) => {
+    const { name, email, phone, username, password } = req.body;
+    const user = await userService.updateMyProfile(req.user._id, { name, email, phone, username, password });
+    sendSuccess(res, user, 'Profile updated successfully.');
+});
+
+const updateMyAvatar = catchAsync(async (req, res) => {
+    const relativePath = req.file ? `/uploads/avatars/${req.file.filename}` : null;
+    const user = await userService.updateMyAvatar(req.user._id, relativePath);
+    sendSuccess(res, user, 'Avatar updated successfully.');
+});
+
 // ── Admin: Queries ────────────────────────────────────────────────────────────
 
 const listUsers = catchAsync(async (req, res) => {
@@ -57,6 +69,8 @@ const rejectUser = catchAsync(async (req, res) => {
 
 module.exports = {
     getMyProfile,
+    updateMyProfile,
+    updateMyAvatar,
     listUsers,
     getUser,
     updateUser,

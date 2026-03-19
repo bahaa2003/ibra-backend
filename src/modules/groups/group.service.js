@@ -41,7 +41,8 @@ const createGroup = async ({ name, percentage }) => {
  * @param {{ includeInactive?: boolean }} opts
  */
 const listGroups = async ({ includeInactive = false } = {}) => {
-    const filter = includeInactive ? {} : { isActive: true };
+    const filter = { deletedAt: null };
+    if (!includeInactive) filter.isActive = true;
     return Group.find(filter).sort({ percentage: -1, name: 1 });
 };
 
@@ -126,6 +127,25 @@ const updateGroup = async (id, { name, percentage, isActive }) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DELETE
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Soft-delete a group by setting deletedAt + isActive = false.
+ * Throws NotFoundError if missing, BusinessRuleError if already deleted.
+ */
+const deleteGroup = async (id) => {
+    const group = await Group.findById(id);
+    if (!group) throw new NotFoundError('Group');
+    if (group.deletedAt) throw new BusinessRuleError('Group is already deleted.', 'ALREADY_DELETED');
+
+    group.deletedAt = new Date();
+    group.isActive = false;
+    await group.save();
+    return group;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // UPDATE — USER'S GROUP ASSIGNMENT
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -171,5 +191,6 @@ module.exports = {
     getHighestPercentageGroup,
     updateGroupPercentage,
     updateGroup,
+    deleteGroup,
     changeUserGroup,
 };

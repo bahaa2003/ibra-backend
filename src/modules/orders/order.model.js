@@ -80,6 +80,17 @@ const orderSchema = new mongoose.Schema(
             required: [true, 'groupIdSnapshot is required'],
         },
 
+        /**
+         * Net profit in USD for this order.
+         * = (finalPriceCharged - basePriceSnapshot) × quantity.
+         * Written once at creation time. Immutable.
+         */
+        profitUsd: {
+            type: Number,
+            default: 0,
+            min: [0, 'profitUsd cannot be negative'],
+        },
+
         // ── Financial Split Tracking ─────────────────────────────────────────
 
         walletDeducted: {
