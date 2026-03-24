@@ -3,37 +3,61 @@
 const { body, query, param } = require('express-validator');
 const { DEPOSIT_STATUS } = require('./deposit.model');
 
+/**
+ * POST /api/deposits — Customer submits a new deposit request.
+ *
+ * The receipt file is handled by multer middleware (not express-validator).
+ * These validations cover the text fields sent alongside the file.
+ */
 const createDepositValidation = [
-    body('amountRequested')
-        .notEmpty().withMessage('amountRequested is required')
-        .isFloat({ gt: 0 }).withMessage('amountRequested must be a positive number'),
+    body('requestedAmount')
+        .notEmpty().withMessage('requestedAmount is required')
+        .isFloat({ gt: 0 }).withMessage('requestedAmount must be a positive number'),
 
-    body('transferImageUrl')
-        .notEmpty().withMessage('transferImageUrl is required')
-        .isURL().withMessage('transferImageUrl must be a valid URL')
-        .isLength({ max: 2048 }).withMessage('transferImageUrl cannot exceed 2048 characters'),
-
-    body('transferredFromNumber')
-        .notEmpty().withMessage('transferredFromNumber is required')
-        .isString().withMessage('transferredFromNumber must be a string')
+    body('currency')
+        .notEmpty().withMessage('currency is required')
+        .isString().withMessage('currency must be a string')
         .trim()
-        .isLength({ min: 1, max: 100 }).withMessage('transferredFromNumber must be 1–100 characters'),
+        .isLength({ min: 3, max: 3 }).withMessage('currency must be a 3-letter ISO 4217 code')
+        .toUpperCase(),
+
+    body('paymentMethodId')
+        .notEmpty().withMessage('paymentMethodId is required')
+        .isString().withMessage('paymentMethodId must be a string')
+        .trim(),
+
+    body('notes')
+        .optional()
+        .isString().withMessage('notes must be a string')
+        .trim()
+        .isLength({ max: 500 }).withMessage('notes cannot exceed 500 characters'),
 ];
 
+/**
+ * PATCH /api/deposits/:id/approve
+ */
 const approveDepositValidation = [
     param('id')
         .isMongoId().withMessage('Invalid deposit request ID'),
-
-    body('overrideAmount')
-        .optional()
-        .isFloat({ gt: 0 }).withMessage('overrideAmount must be a positive number'),
 ];
 
+/**
+ * PATCH /api/deposits/:id/reject
+ */
 const rejectDepositValidation = [
     param('id')
         .isMongoId().withMessage('Invalid deposit request ID'),
+
+    body('adminNotes')
+        .optional()
+        .isString().withMessage('adminNotes must be a string')
+        .trim()
+        .isLength({ max: 500 }).withMessage('adminNotes cannot exceed 500 characters'),
 ];
 
+/**
+ * GET /api/deposits — List with optional filters.
+ */
 const listDepositsValidation = [
     query('status')
         .optional()

@@ -7,7 +7,14 @@ const catchAsync = require('../../shared/utils/catchAsync');
 // ── Customer Endpoints ────────────────────────────────────────────────────────
 
 const createOrder = catchAsync(async (req, res) => {
-    const { productId, quantity, orderFieldsValues } = req.body;
+    const { productId, quantity, orderFieldsValues, link, target } = req.body;
+
+    // Merge top-level link/target into orderFieldsValues so they always
+    // reach customerInput (SMM providers need these as provider params).
+    const mergedFields = { ...orderFieldsValues };
+    if (link && !mergedFields.link) mergedFields.link = link;
+    if (target && !mergedFields.target) mergedFields.target = target;
+    const finalFields = Object.keys(mergedFields).length > 0 ? mergedFields : null;
 
     // Extract optional idempotency key from header
     const idempotencyKey = req.headers['idempotency-key'] || null;
@@ -24,7 +31,7 @@ const createOrder = catchAsync(async (req, res) => {
         productId,
         quantity: parseInt(quantity, 10),
         idempotencyKey,
-        orderFieldsValues: orderFieldsValues ?? null,
+        orderFieldsValues: finalFields,
         auditContext,
     });
 

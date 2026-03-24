@@ -326,6 +326,30 @@ const updateUserAvatar = async (id, avatarUrl, adminId) => {
     return user;
 };
 
+// ─── Update Credit Limit ──────────────────────────────────────────────────────
+
+/**
+ * Admin update of a user's credit limit (overdraft allowance).
+ */
+const updateUserCreditLimit = async (id, creditLimit, adminId) => {
+    const user = await _findOrFail(id);
+
+    const previousCreditLimit = user.creditLimit || 0;
+    user.creditLimit = Math.max(0, Number(creditLimit) || 0);
+    await user.save();
+
+    createAuditLog({
+        actorId: adminId,
+        actorRole: ACTOR_ROLES.ADMIN,
+        action: ADMIN_ACTIONS.USER_UPDATED,
+        entityType: ENTITY_TYPES.USER,
+        entityId: user._id,
+        metadata: { field: 'creditLimit', previousCreditLimit, newCreditLimit: user.creditLimit },
+    });
+
+    return user;
+};
+
 module.exports = {
     listUsers,
     getUserById,
@@ -335,6 +359,7 @@ module.exports = {
     rejectUser,
     updateUserRole,
     updateUserCurrency,
+    updateUserCreditLimit,
     resetUserPassword,
     updateUserAvatar,
 };

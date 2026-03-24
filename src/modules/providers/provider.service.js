@@ -105,7 +105,7 @@ const publishProduct = async ({
     displayOrder = 0,
     isActive = true,
     pricingMode = PRICING_MODES.MANUAL,
-    executionType = 'manual',
+    executionType = 'automatic',
 }) => {
     // Load the raw product
     const pp = await ProviderProduct.findById(providerProductId).populate('provider');

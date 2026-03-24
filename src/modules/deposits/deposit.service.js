@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const { DepositRequest, DEPOSIT_STATUS } = require('./deposit.model');
 const { User } = require('../users/user.model');
 const { creditWalletDirect } = require('../wallet/wallet.service');
+const { convertUsdToUserCurrency } = require('../../services/currencyConverter.service');
 const {
     NotFoundError,
     BusinessRuleError,
@@ -17,30 +18,39 @@ const { DEPOSIT_ACTIONS, WALLET_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('
 // =============================================================================
 
 /**
- * Customer creates a new deposit request.
+ * Customer creates a new deposit request (multi-currency).
  *
  * Business rules:
  *   - User must exist and be ACTIVE (enforced upstream by requireActiveUser middleware).
  *   - No duplicate check — a user may have multiple PENDING requests.
- *   - Amount must be > 0 (enforced by schema).
+ *   - requestedAmount must be > 0 (enforced by schema).
+ *   - amountUsd is pre-calculated by the controller using the frozen exchangeRate.
  *   - No wallet credit at this stage; the request is PENDING until admin review.
  *
  * Audit: DEPOSIT_REQUESTED — fire-and-forget after save.
  *
  * @param {Object} params
  * @param {string|ObjectId} params.userId
- * @param {number}          params.amountRequested
- * @param {string}          params.transferImageUrl
- * @param {string}          params.transferredFromNumber
+ * @param {string}          params.paymentMethodId
+ * @param {number}          params.requestedAmount
+ * @param {string}          params.currency
+ * @param {number}          params.exchangeRate
+ * @param {number}          params.amountUsd
+ * @param {string}          params.receiptImage
+ * @param {string|null}     [params.notes]
  * @param {Object|null}     [params.auditContext]
  *
  * @returns {Promise<DepositRequest>}
  */
 const createDepositRequest = async ({
     userId,
-    amountRequested,
-    transferImageUrl,
-    transferredFromNumber,
+    paymentMethodId,
+    requestedAmount,
+    currency,
+    exchangeRate,
+    amountUsd,
+    receiptImage,
+    notes = null,
     auditContext = null,
 }) => {
     // Confirm user exists (belt-and-suspenders — middleware already checks ACTIVE)
@@ -49,9 +59,13 @@ const createDepositRequest = async ({
 
     const deposit = await DepositRequest.create({
         userId,
-        amountRequested,
-        transferImageUrl,
-        transferredFromNumber,
+        paymentMethodId,
+        requestedAmount: Number(parseFloat(requestedAmount).toFixed(2)),
+        currency,
+        exchangeRate,
+        amountUsd: Number(parseFloat(amountUsd).toFixed(2)),
+        receiptImage,
+        notes,
         status: DEPOSIT_STATUS.PENDING,
     });
 
@@ -64,8 +78,11 @@ const createDepositRequest = async ({
         entityId: deposit._id,
         metadata: {
             userId: userId.toString(),
-            amountRequested,
-            transferredFromNumber,
+            paymentMethodId,
+            requestedAmount: deposit.requestedAmount,
+            currency,
+            exchangeRate,
+            amountUsd: deposit.amountUsd,
         },
         ipAddress: auditContext?.ipAddress ?? null,
         userAgent: auditContext?.userAgent ?? null,
@@ -79,14 +96,13 @@ const createDepositRequest = async ({
 // =============================================================================
 
 /**
- * Admin approves a deposit request and credits the user's wallet.
+ * Admin approves a deposit request and credits the user's wallet with amountUsd.
  *
- * All mutations happen inside a single MongoDB transaction session:
+ * All mutations use an atomic compare-and-swap on { _id, status: PENDING }:
  *   1. Load and validate the deposit.
- *   2. Atomic findOneAndUpdate with { status: PENDING } condition — prevents
- *      double-approval even under concurrent requests (no-op if status changed).
- *   3. Atomically credit the user's wallet.
- *   4. Commit.
+ *   2. Atomic findOneAndUpdate — prevents double-approval even under
+ *      concurrent requests (no-op if status changed).
+ *   3. Atomically credit the user's wallet with the pre-calculated amountUsd.
  *
  * Concurrency safety:
  *   findOneAndUpdate with { _id, status: PENDING } acts as a compare-and-swap.
@@ -97,12 +113,11 @@ const createDepositRequest = async ({
  *
  * @param {string|ObjectId} depositId
  * @param {string|ObjectId} adminId
- * @param {number|null}     [overrideAmount]
  * @param {Object|null}     [auditContext]
  *
  * @returns {Promise<DepositRequest>}
  */
-const approveDeposit = async (depositId, adminId, overrideAmount = null, auditContext = null) => {
+const approveDeposit = async (depositId, adminId, auditContext = null) => {
     // Pre-read to give clear error messages if status is already wrong
     const existing = await DepositRequest.findById(depositId);
     if (!existing) throw new NotFoundError('DepositRequest');
@@ -120,24 +135,19 @@ const approveDeposit = async (depositId, adminId, overrideAmount = null, auditCo
         );
     }
 
-    // Determine the approved amount
-    const approvedAmount = overrideAmount !== null
-        ? parseFloat(parseFloat(overrideAmount).toFixed(2))
-        : parseFloat(existing.amountRequested.toFixed(2));
+    // Use the pre-calculated amountUsd (frozen at request creation time)
+    const usdAmount = Number(parseFloat(existing.amountUsd).toFixed(2));
 
-    if (approvedAmount <= 0) {
-        throw new BusinessRuleError('Approved amount must be greater than zero.', 'INVALID_AMOUNT');
+    if (usdAmount <= 0) {
+        throw new BusinessRuleError('Deposit USD amount must be greater than zero.', 'INVALID_AMOUNT');
     }
 
     // Atomic compare-and-swap on { _id, status: PENDING }
-    // If status changed between the pre-read and this write (concurrent request),
-    // findOneAndUpdate returns null and we throw.
     const updated = await DepositRequest.findOneAndUpdate(
         { _id: depositId, status: DEPOSIT_STATUS.PENDING },
         {
             $set: {
                 status: DEPOSIT_STATUS.APPROVED,
-                amountApproved: approvedAmount,
                 reviewedBy: adminId,
                 reviewedAt: new Date(),
             },
@@ -152,12 +162,20 @@ const approveDeposit = async (depositId, adminId, overrideAmount = null, auditCo
         );
     }
 
-    // Credit the wallet (no session — standalone compatible)
+    // ── Convert USD truth to user's CURRENT wallet currency ──────────────
+    // walletBalance is stored in the user's local currency, so we must
+    // convert the USD amount at the current exchange rate before crediting.
+    const userDoc = await User.findById(updated.userId).select('currency');
+    const walletCurrency = userDoc?.currency ?? 'USD';
+    const conversion = await convertUsdToUserCurrency(usdAmount, walletCurrency);
+    const walletCreditAmount = conversion.finalAmount; // in user's local currency
+
+    // Credit the wallet with the currency-converted amount
     await creditWalletDirect({
         userId: updated.userId,
-        amount: approvedAmount,
+        amount: walletCreditAmount,
         reference: updated._id,
-        description: `Deposit approval #${updated._id}`,
+        description: `Deposit approval #${updated._id} (${updated.requestedAmount} ${updated.currency} → ${usdAmount} USD → ${walletCreditAmount} ${walletCurrency})`,
     });
 
     // Audit: fire-and-forget
@@ -173,8 +191,13 @@ const approveDeposit = async (depositId, adminId, overrideAmount = null, auditCo
         entityId: updated._id,
         metadata: {
             userId: updated.userId.toString(),
-            amountRequested: updated.amountRequested,
-            amountApproved: approvedAmount,
+            requestedAmount: updated.requestedAmount,
+            depositCurrency: updated.currency,
+            depositExchangeRate: updated.exchangeRate,
+            amountUsd: usdAmount,
+            walletCurrency,
+            walletConversionRate: conversion.rate,
+            walletCreditAmount,
             reviewedBy: adminId.toString(),
         },
     });
@@ -186,7 +209,9 @@ const approveDeposit = async (depositId, adminId, overrideAmount = null, auditCo
         entityId: updated.userId,
         metadata: {
             depositId: updated._id.toString(),
-            amount: approvedAmount,
+            usdAmount,
+            walletCurrency,
+            walletCreditAmount,
             reason: 'DEPOSIT_APPROVED',
         },
     });
@@ -208,11 +233,12 @@ const approveDeposit = async (depositId, adminId, overrideAmount = null, auditCo
  *
  * @param {string|ObjectId} depositId
  * @param {string|ObjectId} adminId
+ * @param {string|null}     [adminNotes]      - optional reason for rejection
  * @param {Object|null}     [auditContext]
  *
  * @returns {Promise<DepositRequest>}
  */
-const rejectDeposit = async (depositId, adminId, auditContext = null) => {
+const rejectDeposit = async (depositId, adminId, adminNotes = null, auditContext = null) => {
     const deposit = await DepositRequest.findById(depositId);
     if (!deposit) throw new NotFoundError('DepositRequest');
 
@@ -232,6 +258,7 @@ const rejectDeposit = async (depositId, adminId, auditContext = null) => {
     deposit.status = DEPOSIT_STATUS.REJECTED;
     deposit.reviewedBy = adminId;
     deposit.reviewedAt = new Date();
+    if (adminNotes) deposit.adminNotes = adminNotes;
     await deposit.save();
 
     // Audit: fire-and-forget after save
@@ -243,7 +270,10 @@ const rejectDeposit = async (depositId, adminId, auditContext = null) => {
         entityId: deposit._id,
         metadata: {
             userId: deposit.userId.toString(),
-            amountRequested: deposit.amountRequested,
+            requestedAmount: deposit.requestedAmount,
+            currency: deposit.currency,
+            amountUsd: deposit.amountUsd,
+            adminNotes: adminNotes || null,
             reviewedBy: adminId.toString(),
         },
         ipAddress: auditContext?.ipAddress ?? null,
@@ -272,7 +302,7 @@ const listDeposits = async ({ page = 1, limit = 20, status } = {}) => {
             .sort({ createdAt: 1 })
             .skip(skip)
             .limit(limit)
-            .populate('userId', 'name email walletBalance')
+            .populate('userId', 'name email walletBalance currency')
             .populate('reviewedBy', 'name email'),
         DepositRequest.countDocuments(filter),
     ]);
@@ -333,14 +363,13 @@ const getDepositById = async (depositId, requestingUserId = null) => {
 // =============================================================================
 
 /**
- * Update a PENDING deposit request (admin editing amount or transfer number).
+ * Update a PENDING deposit request (admin editing fields).
  *
  * Guard: strictly rejects updates if the deposit is NOT in PENDING status.
  *
  * @param {string}          depositId
  * @param {Object}          data
- * @param {number}          [data.amountRequested]
- * @param {string}          [data.transferredFromNumber]
+ * @param {number}          [data.requestedAmount]
  * @param {string|ObjectId} adminId
  *
  * @returns {Promise<DepositRequest>}
@@ -357,12 +386,14 @@ const updatePendingDeposit = async (depositId, data, adminId) => {
     }
 
     const before = {
-        amountRequested: deposit.amountRequested,
-        transferredFromNumber: deposit.transferredFromNumber,
+        requestedAmount: deposit.requestedAmount,
     };
 
-    if (data.amountRequested !== undefined) deposit.amountRequested = data.amountRequested;
-    if (data.transferredFromNumber !== undefined) deposit.transferredFromNumber = data.transferredFromNumber;
+    if (data.requestedAmount !== undefined) {
+        deposit.requestedAmount = Number(parseFloat(data.requestedAmount).toFixed(2));
+        // Recalculate amountUsd with stored exchangeRate
+        deposit.amountUsd = Number((deposit.requestedAmount / deposit.exchangeRate).toFixed(2));
+    }
 
     await deposit.save();
 
@@ -372,7 +403,13 @@ const updatePendingDeposit = async (depositId, data, adminId) => {
         action: DEPOSIT_ACTIONS.UPDATED,
         entityType: ENTITY_TYPES.DEPOSIT,
         entityId: deposit._id,
-        metadata: { before, after: { amountRequested: deposit.amountRequested, transferredFromNumber: deposit.transferredFromNumber } },
+        metadata: {
+            before,
+            after: {
+                requestedAmount: deposit.requestedAmount,
+                amountUsd: deposit.amountUsd,
+            },
+        },
     });
 
     return deposit;

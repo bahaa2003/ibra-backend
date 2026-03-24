@@ -203,6 +203,8 @@ class BaseProviderAdapter {
 const UNIFIED_STATUS = Object.freeze({
     COMPLETED: 'COMPLETED',
     PENDING: 'PENDING',
+    PROCESSING: 'PROCESSING',
+    PARTIAL: 'PARTIAL',
     FAILED: 'FAILED',
 });
 
@@ -212,7 +214,7 @@ const UNIFIED_STATUS = Object.freeze({
  * and Alkasr ('accept', 'wait', 'reject', 'OK', etc.)
  *
  * @param {string} raw
- * @returns {'COMPLETED'|'PENDING'|'FAILED'}
+ * @returns {'COMPLETED'|'PENDING'|'PROCESSING'|'PARTIAL'|'FAILED'}
  */
 const toUnifiedStatus = (raw) => {
     switch (String(raw ?? '').toLowerCase().trim()) {
@@ -223,16 +225,31 @@ const toUnifiedStatus = (raw) => {
         case 'accept':
         case 'accepted':
         case 'ok':
+        case 'delivered':
+        case 'fulfilled':
             return UNIFIED_STATUS.COMPLETED;
 
-        case 'pending':
+        case 'partial':
+        case 'partially_completed':
+        case 'partial_complete':
+            return UNIFIED_STATUS.PARTIAL;
+
         case 'processing':
         case 'in_progress':
         case 'in progress':
+        case 'inprogress':
+        case 'in_process':
+        case 'running':
+        case 'active':
+            return UNIFIED_STATUS.PROCESSING;
+
+        case 'pending':
         case 'queued':
         case 'wait':
         case 'waiting':
-        case 'in_process':
+        case 'awaiting':
+        case 'new':
+        case 'created':
             return UNIFIED_STATUS.PENDING;
 
         case 'cancelled':
@@ -242,6 +259,9 @@ const toUnifiedStatus = (raw) => {
         case 'error':
         case 'reject':
         case 'rejected':
+        case 'refunded':
+        case 'fail':
+        case 'expired':
         default:
             return UNIFIED_STATUS.FAILED;
     }

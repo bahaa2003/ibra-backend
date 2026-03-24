@@ -94,8 +94,13 @@ const createProduct = async ({
     displayOrder = 0,
     isActive = true,
     executionType = 'manual',
-    orderFields = [],       // ← dynamic order form fields
-    providerMapping = {},   // ← internal key → provider param name map
+    orderFields = [],
+    providerMapping = {},
+    provider = null,
+    providerProduct = null,
+    pricingMode = PRICING_MODES.MANUAL,
+    markupType = MARKUP_TYPES.PERCENTAGE,
+    markupValue = 0,
 }, adminUserId = null) => {
     const existing = await Product.findOne({ name: new RegExp(`^${name}$`, 'i') });
     if (existing) throw new ConflictError(`A product named '${name}' already exists.`);
@@ -104,19 +109,63 @@ const createProduct = async ({
         throw new BusinessRuleError('maxQty must be >= minQty.', 'INVALID_QTY_RANGE');
     }
 
+    // If a provider link is supplied, default executionType to 'automatic'
+    const resolvedExecutionType = (provider && executionType === 'manual')
+        ? 'automatic'
+        : executionType;
+
+    // ── Pricing calculation ───────────────────────────────────────────────
+    let resolvedBasePrice = parseFloat(parseFloat(basePrice).toFixed(6));
+    let resolvedFinalPrice = null;
+    let resolvedProviderPrice = null;
+
+    if (providerProduct) {
+        // Fetch provider product's raw price for markup calculation
+        const pp = await ProviderProduct.findById(providerProduct).select('rawPrice rawPayload');
+        if (pp) {
+            const effectiveRawPrice = Number(pp.rawPrice || pp.rawPayload?.product_price || 0) || 0;
+            resolvedProviderPrice = parseFloat(effectiveRawPrice.toFixed(6));
+
+            if (pricingMode === PRICING_MODES.SYNC) {
+                resolvedFinalPrice = computeFinalPrice(resolvedProviderPrice, markupType, markupValue);
+                resolvedBasePrice = resolvedFinalPrice ?? resolvedProviderPrice;
+            } else if (markupValue > 0) {
+                // Manual mode with markup: apply one-time markup on top of provider price
+                resolvedFinalPrice = computeFinalPrice(resolvedProviderPrice, markupType, markupValue);
+                resolvedBasePrice = resolvedFinalPrice ?? resolvedProviderPrice;
+            } else {
+                // Manual mode, no markup: use admin's basePrice as-is
+                resolvedFinalPrice = resolvedBasePrice;
+            }
+        }
+    }
+
+    // Guard: if computed price is 0 but admin supplied a valid basePrice, use it
+    if (resolvedBasePrice <= 0 && parseFloat(basePrice) > 0) {
+        resolvedBasePrice = parseFloat(parseFloat(basePrice).toFixed(6));
+        resolvedFinalPrice = resolvedBasePrice;
+    }
+
     return Product.create({
         name,
         description,
-        basePrice: parseFloat(parseFloat(basePrice).toFixed(6)),
+        basePrice: resolvedBasePrice,
+        providerPrice: resolvedProviderPrice,
+        finalPrice: resolvedFinalPrice,
         minQty,
         maxQty,
         category,
         image,
         displayOrder,
         isActive,
-        executionType,
+        pricingMode,
+        markupType,
+        markupValue,
+        executionType: resolvedExecutionType,
         orderFields,
         providerMapping,
+        provider,
+        providerProduct,
         createdBy: adminUserId,
     });
 };
@@ -264,33 +313,91 @@ const publishFromProviderProduct = async ({
  * @returns {Promise<Product>}
  */
 const updateProduct = async (productId, updates) => {
-    const product = await Product.findById(productId).populate('providerProduct', 'rawPrice');
+    const product = await Product.findById(productId).populate('providerProduct', 'rawPrice rawPayload');
     if (!product) throw new NotFoundError('Product');
 
     const ALLOWED = [
         'name', 'description', 'image', 'category', 'displayOrder', 'isActive',
         'basePrice', 'minQty', 'maxQty', 'pricingMode', 'markupType', 'markupValue',
-        'executionType', 'orderFields', 'providerMapping',   // ← both field schemas updatable
+        'executionType', 'orderFields', 'providerMapping',
+        'provider', 'providerProduct',
+        'syncPriceWithProvider', 'enableManualPrice', 'manualPriceAdjustment', 'finalPrice',
     ];
     const safe = Object.fromEntries(
         Object.entries(updates).filter(([k]) => ALLOWED.includes(k))
     );
 
-    // Detect if we need to recompute pricing
+    // ── Determine effective pricing fields ────────────────────────────────
     const effectivePricingMode = safe.pricingMode ?? product.pricingMode;
     const effectiveMarkupType = safe.markupType ?? product.markupType;
     const effectiveMarkupValue = safe.markupValue ?? product.markupValue;
-    const switchingToSync = safe.pricingMode === PRICING_MODES.SYNC
-        && product.pricingMode !== PRICING_MODES.SYNC;
-    const markupChanged = (safe.markupType != null || safe.markupValue != null)
-        && effectivePricingMode === PRICING_MODES.SYNC;
 
-    if ((switchingToSync || markupChanged) && product.providerProduct) {
-        const rawPrice = parseFloat(product.providerProduct.rawPrice.toFixed(6));
-        const newFinalPrice = computeFinalPrice(rawPrice, effectiveMarkupType, effectiveMarkupValue);
+    const pricingModeChanged = safe.pricingMode != null && safe.pricingMode !== product.pricingMode;
+    const markupChanged = safe.markupType != null || safe.markupValue != null;
+    const basePriceChanged = safe.basePrice != null;
+    const hasProviderLink = product.providerProduct != null;
+
+    // ── Recompute pricing ────────────────────────────────────────────────
+    if (effectivePricingMode === PRICING_MODES.SYNC && hasProviderLink) {
+        // SYNC mode: always compute from providerPrice + markup
+        if (pricingModeChanged || markupChanged) {
+            const pp = product.providerProduct;
+            const effectiveRawPrice = Number(pp.rawPrice || pp.rawPayload?.product_price || 0) || 0;
+            const rawPrice = parseFloat(effectiveRawPrice.toFixed(6));
+            const newFinalPrice = computeFinalPrice(rawPrice, effectiveMarkupType, effectiveMarkupValue);
+            safe.providerPrice = rawPrice;
+            safe.finalPrice = newFinalPrice;
+            safe.basePrice = newFinalPrice ?? rawPrice;
+        }
+    } else if (effectivePricingMode === PRICING_MODES.MANUAL) {
+        // MANUAL mode: admin controls basePrice
+        if (basePriceChanged && !markupChanged) {
+            // Admin directly set a basePrice — use it as-is
+            safe.basePrice = parseFloat(parseFloat(safe.basePrice).toFixed(6));
+            safe.finalPrice = safe.basePrice;
+        } else if (markupChanged && hasProviderLink) {
+            // Admin changed markup while in manual mode — apply one-time markup
+            const pp = product.providerProduct;
+            const effectiveRawPrice = Number(pp.rawPrice || pp.rawPayload?.product_price || 0) || 0;
+            const rawPrice = parseFloat(effectiveRawPrice.toFixed(6));
+            const newFinalPrice = computeFinalPrice(rawPrice, effectiveMarkupType, effectiveMarkupValue);
+            safe.providerPrice = rawPrice;
+            safe.finalPrice = newFinalPrice;
+            safe.basePrice = newFinalPrice ?? rawPrice;
+        } else if (basePriceChanged && markupChanged && hasProviderLink) {
+            // Both changed — markup takes precedence over basePrice
+            const pp = product.providerProduct;
+            const effectiveRawPrice = Number(pp.rawPrice || pp.rawPayload?.product_price || 0) || 0;
+            const rawPrice = parseFloat(effectiveRawPrice.toFixed(6));
+            const newFinalPrice = computeFinalPrice(rawPrice, effectiveMarkupType, effectiveMarkupValue);
+            safe.providerPrice = rawPrice;
+            safe.finalPrice = newFinalPrice;
+            safe.basePrice = newFinalPrice ?? rawPrice;
+        }
+    }
+
+    // ── Manual price adjustment recalculation ─────────────────────────────
+    // When enableManualPrice is on and a provider link exists, enforce:
+    //   finalPrice = providerPrice + manualPriceAdjustment
+    const effectiveEnableManual = safe.enableManualPrice ?? product.enableManualPrice;
+    const effectiveManualAdj = safe.manualPriceAdjustment ?? product.manualPriceAdjustment ?? 0;
+
+    if (effectiveEnableManual && hasProviderLink) {
+        const pp = product.providerProduct;
+        const effectiveRawPrice = Number(pp.rawPrice || pp.rawPayload?.product_price || 0) || 0;
+        const rawPrice = parseFloat(effectiveRawPrice.toFixed(6));
+        const computedFinal = parseFloat((rawPrice + Number(effectiveManualAdj)).toFixed(6));
         safe.providerPrice = rawPrice;
-        safe.finalPrice = newFinalPrice;
-        safe.basePrice = newFinalPrice ?? rawPrice;
+        safe.finalPrice = computedFinal;
+        safe.basePrice = computedFinal;
+    }
+
+    // Keep syncPriceWithProvider in sync with pricingMode
+    if (safe.syncPriceWithProvider !== undefined && safe.pricingMode === undefined) {
+        safe.pricingMode = safe.syncPriceWithProvider ? PRICING_MODES.SYNC : PRICING_MODES.MANUAL;
+    }
+    if (safe.pricingMode !== undefined && safe.syncPriceWithProvider === undefined) {
+        safe.syncPriceWithProvider = safe.pricingMode === PRICING_MODES.SYNC;
     }
 
     Object.assign(product, safe);

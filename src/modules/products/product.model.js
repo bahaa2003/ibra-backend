@@ -168,6 +168,34 @@ const productSchema = new mongoose.Schema(
             default: PRICING_MODES.MANUAL,
         },
 
+        /**
+         * Whether to auto-sync basePrice from providerPrice on each sync run.
+         * Semantic alias for pricingMode=sync, used by the frontend toggle.
+         */
+        syncPriceWithProvider: {
+            type: Boolean,
+            default: true,
+        },
+
+        /**
+         * When true, admin has set a manual price adjustment (manualPriceAdjustment)
+         * on top of the provider's raw price, instead of using standard markup logic.
+         */
+        enableManualPrice: {
+            type: Boolean,
+            default: false,
+        },
+
+        /**
+         * Absolute amount added to (or subtracted from) providerPrice.
+         * Only applied when enableManualPrice is true.
+         *   finalPrice = providerPrice + manualPriceAdjustment
+         */
+        manualPriceAdjustment: {
+            type: Number,
+            default: 0,
+        },
+
         // ── Lifecycle ──────────────────────────────────────────────────────────
 
         isActive: {

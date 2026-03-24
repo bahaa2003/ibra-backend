@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 /**
  * Deposit request status lifecycle.
  *
- *  PENDING  → APPROVED   (admin approves, wallet is credited)
+ *  PENDING  → APPROVED   (admin approves, wallet is credited with amountUsd)
  *  PENDING  → REJECTED   (admin rejects, wallet unchanged)
  *
  * Status transitions are one-way — you cannot un-approve or un-reject.
@@ -27,6 +27,81 @@ const depositRequestSchema = new mongoose.Schema(
             index: true,
         },
 
+        /**
+         * ID of the dynamic payment method the customer selected.
+         * References the admin-configured payment methods stored in settings.
+         */
+        paymentMethodId: {
+            type: String,
+            required: [true, 'paymentMethodId is required'],
+            trim: true,
+        },
+
+        /**
+         * Amount the customer claims to have transferred, in the local currency.
+         * Must be a positive number. Stored as-is in the request.
+         */
+        requestedAmount: {
+            type: Number,
+            required: [true, 'requestedAmount is required'],
+            min: [0.01, 'requestedAmount must be greater than 0'],
+        },
+
+        /**
+         * ISO 4217 currency code the deposit was made in.
+         * e.g. 'EGP', 'USD', 'SAR'
+         */
+        currency: {
+            type: String,
+            required: [true, 'currency is required'],
+            uppercase: true,
+            trim: true,
+            match: [/^[A-Z]{3}$/, 'currency must be a 3-letter ISO 4217 code (e.g. USD, EGP)'],
+        },
+
+        /**
+         * The platformRate of the currency at the time of request.
+         * Frozen at creation time so future rate changes don't affect
+         * the value of this pending deposit.
+         * Convention: 1 USD = exchangeRate units of this currency.
+         */
+        exchangeRate: {
+            type: Number,
+            required: [true, 'exchangeRate is required'],
+            min: [0.000001, 'exchangeRate must be positive'],
+        },
+
+        /**
+         * USD equivalent: requestedAmount / exchangeRate.
+         * This is the amount that will be credited to the user's wallet on approval.
+         * Wallet balances are always denominated in USD.
+         */
+        amountUsd: {
+            type: Number,
+            required: [true, 'amountUsd is required'],
+            min: [0.01, 'amountUsd must be greater than 0'],
+        },
+
+        /**
+         * Relative path to the uploaded receipt image/PDF.
+         * Stored by multer via createUpload('deposits').
+         * e.g. 'uploads/deposits/1679580000000-abcdef01.jpg'
+         */
+        receiptImage: {
+            type: String,
+            required: [true, 'receiptImage is required'],
+            trim: true,
+            maxlength: [2048, 'receiptImage path cannot exceed 2048 characters'],
+        },
+
+        /** Optional customer notes. */
+        notes: {
+            type: String,
+            trim: true,
+            maxlength: [500, 'notes cannot exceed 500 characters'],
+            default: null,
+        },
+
         /** Current lifecycle status. */
         status: {
             type: String,
@@ -38,54 +113,12 @@ const depositRequestSchema = new mongoose.Schema(
             index: true,
         },
 
-        /**
-         * Amount the customer claims to have transferred.
-         * Must be a positive number. Stored as-is in the request.
-         */
-        amountRequested: {
-            type: Number,
-            required: [true, 'amountRequested is required'],
-            min: [0.01, 'amountRequested must be greater than 0'],
-        },
-
-        /**
-         * Amount the admin actually approves for crediting.
-         * May differ from amountRequested if the admin overrides it.
-         * Null until status moves to APPROVED.
-         */
-        amountApproved: {
-            type: Number,
+        /** Admin reasoning for rejection (optional). */
+        adminNotes: {
+            type: String,
+            trim: true,
+            maxlength: [500, 'adminNotes cannot exceed 500 characters'],
             default: null,
-            min: [0.01, 'amountApproved must be greater than 0'],
-            validate: {
-                validator: function (v) {
-                    // Only validate if present (null is allowed for PENDING/REJECTED)
-                    return v === null || v > 0;
-                },
-                message: 'amountApproved must be greater than 0 when set',
-            },
-        },
-
-        /**
-         * URL of the transfer receipt / screenshot.
-         * Required so admins can verify the payment before approving.
-         */
-        transferImageUrl: {
-            type: String,
-            required: [true, 'transferImageUrl is required'],
-            trim: true,
-            maxlength: [2048, 'transferImageUrl cannot exceed 2048 characters'],
-        },
-
-        /**
-         * The phone/account number or identifier from which the transfer originated.
-         * Required for fraud detection and reconciliation.
-         */
-        transferredFromNumber: {
-            type: String,
-            required: [true, 'transferredFromNumber is required'],
-            trim: true,
-            maxlength: [100, 'transferredFromNumber cannot exceed 100 characters'],
         },
 
         /** Admin who reviewed this request (null while PENDING). */

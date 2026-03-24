@@ -69,10 +69,18 @@ const getTransactionHistory = async (userId, { page = 1, limit = 20 } = {}) => {
 
 /**
  * Admin: add funds to a user's wallet balance.
+ *
+ * IMPORTANT: The `amount` parameter is always in the USER'S LOCAL CURRENCY
+ * (the same currency as their walletBalance). No USD conversion is applied.
+ * The admin dashboard displays balances in local currency, so the input
+ * is naturally in the same denomination.
+ *
  * No MongoDB transactions — uses atomic findOneAndUpdate + sequential create.
  */
 const addFunds = async (userId, amount, reason, adminId) => {
-    if (amount <= 0 || amount > MAX_ADJUSTMENT) {
+    const parsedAmount = Number(parseFloat(amount).toFixed(2));
+
+    if (parsedAmount <= 0 || parsedAmount > MAX_ADJUSTMENT) {
         throw new BusinessRuleError(
             `Adjustment amount must be between 0.01 and ${MAX_ADJUSTMENT}.`,
             'INVALID_ADJUSTMENT_AMOUNT'
@@ -82,22 +90,24 @@ const addFunds = async (userId, amount, reason, adminId) => {
     // Atomic increment — captures the pre-update document
     const oldUser = await User.findOneAndUpdate(
         { _id: userId },
-        [{ $set: { walletBalance: { $add: ['$walletBalance', amount] } } }],
+        [{ $set: { walletBalance: { $add: ['$walletBalance', parsedAmount] } } }],
         { new: false }
     );
 
     if (!oldUser) throw new NotFoundError('User');
 
+    const userCurrency = oldUser.currency || 'USD';
+
     // Create the wallet transaction record
     const transaction = await WalletTransaction.create({
         userId,
         type: TRANSACTION_TYPES.CREDIT,
-        amount,
+        amount: parsedAmount,
         balanceBefore: oldUser.walletBalance,
-        balanceAfter: oldUser.walletBalance + amount,
+        balanceAfter: Number((oldUser.walletBalance + parsedAmount).toFixed(2)),
         reference: null,
         status: 'COMPLETED',
-        description: reason || 'Admin manual credit',
+        description: reason || `Admin manual credit (${userCurrency})`,
     });
 
     // Audit (fire-and-forget)
@@ -107,7 +117,7 @@ const addFunds = async (userId, amount, reason, adminId) => {
         action: ADMIN_ACTIONS.WALLET_ADJUSTED,
         entityType: ENTITY_TYPES.WALLET,
         entityId: userId,
-        metadata: { type: 'ADD', amount, reason, userId, transactionId: transaction._id },
+        metadata: { type: 'ADD', amount: parsedAmount, currency: userCurrency, reason, userId, transactionId: transaction._id },
     });
 
     return { transaction };
@@ -117,10 +127,16 @@ const addFunds = async (userId, amount, reason, adminId) => {
 
 /**
  * Admin: deduct funds from a user's wallet balance (no order required).
+ *
+ * IMPORTANT: The `amount` parameter is always in the USER'S LOCAL CURRENCY
+ * (the same currency as their walletBalance). No USD conversion is applied.
+ *
  * No MongoDB transactions — uses atomic findOneAndUpdate + sequential create.
  */
 const deductFunds = async (userId, amount, reason, adminId) => {
-    if (amount <= 0 || amount > MAX_ADJUSTMENT) {
+    const parsedAmount = Number(parseFloat(amount).toFixed(2));
+
+    if (parsedAmount <= 0 || parsedAmount > MAX_ADJUSTMENT) {
         throw new BusinessRuleError(
             `Adjustment amount must be between 0.01 and ${MAX_ADJUSTMENT}.`,
             'INVALID_ADJUSTMENT_AMOUNT'
@@ -129,8 +145,8 @@ const deductFunds = async (userId, amount, reason, adminId) => {
 
     // Atomic: only deduct if sufficient balance
     const oldUser = await User.findOneAndUpdate(
-        { _id: userId, walletBalance: { $gte: amount } },
-        [{ $set: { walletBalance: { $subtract: ['$walletBalance', amount] } } }],
+        { _id: userId, walletBalance: { $gte: parsedAmount } },
+        [{ $set: { walletBalance: { $subtract: ['$walletBalance', parsedAmount] } } }],
         { new: false }
     );
 
@@ -140,16 +156,18 @@ const deductFunds = async (userId, amount, reason, adminId) => {
         throw new BusinessRuleError('Insufficient wallet balance for this deduction.', 'INSUFFICIENT_BALANCE');
     }
 
+    const userCurrency = oldUser.currency || 'USD';
+
     // Create the wallet transaction record
     const transaction = await WalletTransaction.create({
         userId,
         type: TRANSACTION_TYPES.DEBIT,
-        amount,
+        amount: parsedAmount,
         balanceBefore: oldUser.walletBalance,
-        balanceAfter: oldUser.walletBalance - amount,
+        balanceAfter: Number((oldUser.walletBalance - parsedAmount).toFixed(2)),
         reference: null,
         status: 'COMPLETED',
-        description: reason || 'Admin manual debit',
+        description: reason || `Admin manual debit (${userCurrency})`,
     });
 
     // Audit (fire-and-forget)
@@ -159,7 +177,7 @@ const deductFunds = async (userId, amount, reason, adminId) => {
         action: ADMIN_ACTIONS.WALLET_ADJUSTED,
         entityType: ENTITY_TYPES.WALLET,
         entityId: userId,
-        metadata: { type: 'DEDUCT', amount, reason, userId, transactionId: transaction._id },
+        metadata: { type: 'DEDUCT', amount: parsedAmount, currency: userCurrency, reason, userId, transactionId: transaction._id },
     });
 
     return { transaction };

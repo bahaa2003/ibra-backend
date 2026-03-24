@@ -35,7 +35,10 @@ require('./modules/admin/setting.model').seedDefaultSettings().catch(() => { });
 const app = express();
 
 // ── Security Middlewares ──────────────────────────────────────────────────────
-app.use(helmet());
+app.use(helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    crossOriginEmbedderPolicy: false,
+}));
 app.use(
     cors({
         origin: config.env === 'production' ? process.env.ALLOWED_ORIGINS : '*',
@@ -93,6 +96,17 @@ app.use(`${API_PREFIX}/providers`, providerRoutes);
 // ── User Panel ─────────────────────────────────────────────────────────────────
 app.use(`${API_PREFIX}/me`, meRoutes);
 
+// ── Public Categories (no auth required — used by storefront/guest pages) ─────
+app.get(`${API_PREFIX}/categories`, async (req, res) => {
+    try {
+        const categorySvc = require('./modules/categories/category.service');
+        const categories = await categorySvc.listCategories({ includeInactive: false });
+        res.json({ success: true, message: 'Categories retrieved', data: { categories } });
+    } catch (err) {
+        res.status(500).json({ success: false, message: 'Failed to load categories' });
+    }
+});
+
 // ── Public Currencies (no auth required — used by registration page) ──────────
 app.get(`${API_PREFIX}/currencies/active`, async (req, res) => {
     try {
@@ -103,6 +117,37 @@ app.get(`${API_PREFIX}/currencies/active`, async (req, res) => {
         res.json({ success: true, message: 'Active currencies', data: { currencies } });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Failed to load currencies' });
+    }
+});
+
+// ── Public Payment Settings (no auth required — used by customer deposit pages) ─
+app.get(`${API_PREFIX}/settings/payment`, async (req, res) => {
+    try {
+        const { Setting } = require('./modules/admin/setting.model');
+        const keys = ['paymentGroups', 'paymentCountryAccounts', 'paymentInstructions', 'whatsappNumber'];
+        const settings = await Setting.find({ key: { $in: keys } }).lean();
+        const find = (key) => settings.find((s) => s.key === key)?.value;
+
+        const paymentGroups = (find('paymentGroups') || [])
+            .filter((g) => g.isActive !== false)
+            .map((g) => ({
+                ...g,
+                methods: (g.methods || []).filter((m) => m.isActive !== false),
+            }))
+            .filter((g) => g.methods && g.methods.length > 0);
+
+        res.json({
+            success: true,
+            message: 'Payment settings',
+            data: {
+                paymentGroups,
+                countryAccounts: find('paymentCountryAccounts') || [],
+                instructions: find('paymentInstructions') || '',
+                whatsappNumber: find('whatsappNumber') || '',
+            },
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, message: 'Failed to load payment settings' });
     }
 });
 

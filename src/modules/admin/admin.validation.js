@@ -74,6 +74,9 @@ const updateUserSchema = Joi.object({
     groupId: objectId().allow(null),
     status: Joi.string().valid('PENDING', 'ACTIVE', 'REJECTED'),
     verified: Joi.boolean(),
+    creditLimit: Joi.number().min(0).messages({
+        'number.min': 'Credit limit cannot be negative',
+    }),
 }).min(1).messages({ 'object.min': 'At least one field must be provided for update' });
 
 const listUsersQuery = Joi.object({
@@ -99,6 +102,13 @@ const updateUserCurrencySchema = Joi.object({
     currency: Joi.string().trim().uppercase().pattern(/^[A-Z]{3}$/).required().messages({
         'any.required': 'Currency code is required',
         'string.pattern.base': 'Currency must be a 3-letter ISO 4217 code (e.g. USD, SAR)',
+    }),
+});
+
+const updateCreditLimitSchema = Joi.object({
+    creditLimit: Joi.number().min(0).required().messages({
+        'number.min': 'Credit limit cannot be negative',
+        'any.required': 'creditLimit is required',
     }),
 });
 
@@ -209,10 +219,19 @@ const createCurrencySchema = Joi.object({
 // ─── Deposit schemas ──────────────────────────────────────────────────────────
 
 const updateDepositSchema = Joi.object({
-    amountRequested: Joi.number().positive(),
-    transferredFromNumber: Joi.string().trim(),
+    requestedAmount: Joi.number().positive(),
 }).min(1).messages({
     'object.min': 'At least one field must be provided for update',
+});
+
+const reviewDepositSchema = Joi.object({
+    status: Joi.string().valid('APPROVED', 'REJECTED').required().messages({
+        'any.required': 'status is required',
+        'any.only': 'status must be APPROVED or REJECTED',
+    }),
+    adminNotes: Joi.string().trim().max(500).optional().allow('', null).messages({
+        'string.max': 'adminNotes cannot exceed 500 characters',
+    }),
 });
 
 // ─── Settings schema ──────────────────────────────────────────────────────────
@@ -230,7 +249,7 @@ const updateSettingSchema = Joi.object({
 // ─── Deposit admin schema ─────────────────────────────────────────────────────
 
 const approveDepositSchema = Joi.object({
-    overrideAmount: Joi.number().positive().optional(),
+    adminNotes: Joi.string().trim().max(500).optional().allow('', null),
 });
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
@@ -244,6 +263,7 @@ module.exports = {
         listUsersQuery,
         updateUserRole: updateUserRoleSchema,
         updateUserCurrency: updateUserCurrencySchema,
+        updateCreditLimit: updateCreditLimitSchema,
         resetUserPassword: resetUserPasswordSchema,
         updateUserAvatar: updateUserAvatarSchema,
         // Providers
@@ -261,6 +281,7 @@ module.exports = {
         createCurrency: createCurrencySchema,
         // Deposits
         updateDeposit: updateDepositSchema,
+        reviewDeposit: reviewDepositSchema,
         // Settings
         updateSetting: updateSettingSchema,
         // Deposits approval

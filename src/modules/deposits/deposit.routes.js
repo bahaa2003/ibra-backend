@@ -12,6 +12,9 @@ const validate = require('../../shared/middlewares/validate');
 const authenticate = require('../../shared/middlewares/authenticate');
 const authorize = require('../../shared/middlewares/authorize');
 const requireActiveUser = require('../../shared/middlewares/requireActiveUser');
+const { createUpload } = require('../../shared/middlewares/upload');
+
+const depositUpload = createUpload('deposits');
 
 const router = Router();
 
@@ -22,12 +25,14 @@ router.use(authenticate);
 
 /**
  * @route  POST /api/deposits
- * @desc   Customer submits a new deposit request
+ * @desc   Customer submits a new deposit request with receipt upload
  * @access Authenticated ACTIVE user
+ * @body   multipart/form-data: receipt (file), requestedAmount, currency, paymentMethodId, notes?
  */
 router.post(
     '/',
     requireActiveUser,
+    depositUpload.single('receipt'),
     createDepositValidation, validate,
     depositController.createDeposit
 );
@@ -48,7 +53,7 @@ router.get(
 
 /**
  * @route  PATCH /api/deposits/:id/approve
- * @desc   Admin approves a deposit and credits the user's wallet
+ * @desc   Admin approves a deposit and credits the user's wallet with amountUsd
  * @access Admin only
  */
 router.patch(

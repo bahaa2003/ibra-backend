@@ -106,12 +106,15 @@ const convertUsdToUserCurrency = async (usdAmount, userCurrency) => {
             usdAmount,
             currency: 'USD',
             rate: 1,
-            finalAmount: parseFloat(usdAmount.toFixed(2)),
+            finalAmount: parseFloat(usdAmount.toFixed(6)),
         };
     }
 
     const rate = currDoc.platformRate;
-    const finalAmount = parseFloat((usdAmount * rate).toFixed(2));
+    // Use 4dp to preserve sub-cent precision for micro-transactions
+    // (e.g. $0.0002 × 15 SAR/USD = 0.003 SAR). Final wallet rounding
+    // to 2dp is handled at the order.service.js chargedAmount step.
+    const finalAmount = parseFloat((usdAmount * rate).toFixed(4));
 
     return {
         usdAmount,

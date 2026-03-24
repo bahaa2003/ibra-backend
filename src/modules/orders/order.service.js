@@ -86,10 +86,14 @@ const createOrder = async ({
                     : await Provider.findById(prod.provider);
                 if (providerDoc?.isActive) {
                     resolvedProvider = getProviderAdapter(providerDoc);
+                } else {
+                    console.warn(`[Order] Provider ${prod.provider._id} is INACTIVE — fulfillment will self-resolve.`);
                 }
             }
-        } catch (_) {
-            // Non-fatal — fall back to manual (PENDING) if resolution fails
+        } catch (resolveErr) {
+            // Log instead of silently swallowing — critical for debugging
+            console.error(`[Order] Provider resolution failed for product ${productId}:`, resolveErr.message);
+            // resolvedProvider stays null — executeOrder will self-resolve
         }
     }
 
@@ -131,8 +135,12 @@ const _attemptCreateOrder = async (
             );
         }
 
-        // ── 2b. Validate dynamic order fields ─────────────────────────────────
+        // ── 2b. Validate / capture dynamic order fields ─────────────────────────
         // Runs BEFORE any financial mutation so a bad field value costs nothing.
+        //
+        // If the product defines formal orderFields, validate against them.
+        // Otherwise, pass through raw values so that link/target/etc. still
+        // reach the provider (critical for SMM-panel services).
         let customerInput = null;
         if (product.orderFields && product.orderFields.length > 0) {
             // validateOrderFields throws BusinessRuleError on invalid input
@@ -141,15 +149,21 @@ const _attemptCreateOrder = async (
                 orderFieldsValues
             );
             customerInput = { values, fieldsSnapshot };
+        } else if (orderFieldsValues && typeof orderFieldsValues === 'object' && Object.keys(orderFieldsValues).length > 0) {
+            // No formal schema — save raw values so the fulfillment engine
+            // can forward them to the provider (e.g. { link: '...' }).
+            customerInput = { values: orderFieldsValues, fieldsSnapshot: [] };
         }
 
         // ── 3. Pricing Engine (USD) ────────────────────────────────────────────
         const pricing = await calculateUserPrice(userId, product.basePrice, session);
-        const usdTotalPrice = parseFloat((pricing.finalPrice * qty).toFixed(2));
+        // Retain full precision — do NOT round until the final chargedAmount.
+        // This prevents micro-prices ($0.0002/unit) from being zeroed out.
+        const usdTotalPrice = pricing.finalPrice * qty;
 
         // ── 3a. Profit Calculation (USD) ────────────────────────────────────────
         // Profit = markup portion only = (markedUpPrice - basePrice) × quantity
-        const profitUsd = parseFloat(((pricing.finalPrice - pricing.basePrice) * qty).toFixed(2));
+        const profitUsd = (pricing.finalPrice - pricing.basePrice) * qty;
 
         // ── 3b. Currency Conversion ────────────────────────────────────────────
         // Fetch the user's preferred currency (within the session for consistency).
@@ -157,8 +171,21 @@ const _attemptCreateOrder = async (
         const userDoc = await User.findById(userId).select('currency').session(session);
         const userCurrency = userDoc?.currency ?? 'USD';
         const conversion = await convertUsdToUserCurrency(usdTotalPrice, userCurrency);
-        const chargedAmount = conversion.finalAmount;   // in user currency
+        // ── FINAL ROUNDING — only place we round to 2dp ────────────────────
+        const chargedAmount = Number(parseFloat(conversion.finalAmount.toFixed(2)));
         const rateSnapshot = conversion.rate;
+
+        // ── 3c. FINAL PRICE GUARD ──────────────────────────────────────────────
+        // Prevent NaN / Infinity / zero from reaching the wallet debit.
+        if (!Number.isFinite(chargedAmount) || chargedAmount <= 0) {
+            throw new BusinessRuleError(
+                'Invalid order price calculation. The final charged amount must be a positive number. ' +
+                `(basePrice=${pricing.basePrice}, markup=${pricing.markupPercentage}%, ` +
+                `usdTotal=${usdTotalPrice}, currency=${userCurrency}, rate=${rateSnapshot}, ` +
+                `chargedAmount=${chargedAmount})`,
+                'INVALID_PRICE_CALCULATION'
+            );
+        }
 
         // ── 4. Atomic Debit (in user currency) ────────────────────────────────
         const { walletDeducted, creditUsedAmount } = await debitWalletAtomic({
@@ -170,12 +197,9 @@ const _attemptCreateOrder = async (
         });
 
         // ── 5. Determine initial status & execution type ───────────────────────
-        // An AUTOMATIC product with a real provider injected → PROCESSING
-        // Any other case                                      → PENDING
-        const isAutomatic = (
-            product.executionType === ORDER_EXECUTION_TYPES.AUTOMATIC &&
-            provider !== null
-        );
+        // An AUTOMATIC product → PROCESSING (fulfillment attempted post-commit)
+        // Any other case        → PENDING   (admin handles manually)
+        const isAutomatic = product.executionType === ORDER_EXECUTION_TYPES.AUTOMATIC;
         const initialStatus = isAutomatic ? ORDER_STATUS.PROCESSING : ORDER_STATUS.PENDING;
 
         // ── 6. Create Order ────────────────────────────────────────────────────
@@ -187,7 +211,7 @@ const _attemptCreateOrder = async (
             markupPercentageSnapshot: pricing.markupPercentage,
             finalPriceCharged: pricing.finalPrice,
             groupIdSnapshot: pricing.groupId,
-            profitUsd,
+            profitUsd: Number(profitUsd.toFixed(2)),
             unitPrice: pricing.finalPrice,
             totalPrice: chargedAmount,   // legacy field — now equals chargedAmount
             walletDeducted,
@@ -198,7 +222,7 @@ const _attemptCreateOrder = async (
             // ── Currency snapshot ────────────────────────────────────────────
             currency: userCurrency,
             rateSnapshot,
-            usdAmount: usdTotalPrice,
+            usdAmount: Number(usdTotalPrice.toFixed(6)),
             chargedAmount,
         };
         if (idempotencyKey) orderData.idempotencyKey = idempotencyKey;
@@ -267,6 +291,9 @@ const _attemptCreateOrder = async (
         });
 
         // ── 9. Trigger provider fulfillment (fire-and-forget) ──────────────────
+        // Always fires for AUTOMATIC products. executeOrder self-resolves the
+        // provider adapter if none was pre-resolved, and handles all failures
+        // (marks FAILED + refunds the wallet).
         if (isAutomatic) {
             createAuditLog({
                 actorId, actorRole, ipAddress, userAgent,
@@ -279,7 +306,8 @@ const _attemptCreateOrder = async (
             // Lazy-require to avoid circular dependency issues
             const { executeOrder } = require('./orderFulfillment.service');
 
-            // Fire-and-forget — client gets PROCESSING response immediately
+            // Fire-and-forget — client gets PROCESSING response immediately.
+            // Pass provider if we have one; executeOrder self-resolves if null.
             executeOrder(order._id, provider, auditContext).catch((err) => {
                 console.error(`[Order] executeOrder failed for ${order._id}:`, err.message);
             });
@@ -314,6 +342,13 @@ const _attemptCreateOrder = async (
 
 /**
  * Mark an order as FAILED and issue a REFUND.
+ *
+ * CROSS-CURRENCY SAFE:
+ *   The refund uses order.usdAmount (the USD truth frozen at order time)
+ *   and converts it to the user's CURRENT currency rate. This prevents
+ *   the bug where a currency change between order and refund causes
+ *   the wrong numeric amount to be credited.
+ *
  * Double-refund prevention via TWO independent guards:
  *   Guard 1 — status check:    order.status === 'FAILED'  → already failed
  *   Guard 2 — timestamp check: order.refundedAt !== null  → already refunded
@@ -344,18 +379,32 @@ const markOrderAsFailed = async (orderId, auditContext = null) => {
             );
         }
 
+        // ── Calculate refund in the user's CURRENT currency ──────────────────
+        // Source of truth: order.usdAmount (frozen at order creation time).
+        // Convert to the user's current wallet currency, NOT the currency at
+        // order time, to prevent cross-currency refund mismatch.
+        const userDoc = await User.findById(order.userId).select('currency').session(session);
+        const currentCurrency = userDoc?.currency ?? 'USD';
+        const usdAmount = order.usdAmount || 0;
+
+        const conversion = await convertUsdToUserCurrency(usdAmount, currentCurrency);
+        const refundAmount = conversion.finalAmount; // in user's current currency
+
         order.status = ORDER_STATUS.FAILED;
         order.failedAt = new Date();
         order.refundedAt = new Date();
         order.refunded = true;
         await order.save({ session });
 
+        // Refund the correctly-converted amount to the wallet.
+        // We pass the full refundAmount as walletDeducted; creditUsedAmount = 0
+        // because the refund is a flat credit — no credit-line accounting needed.
         await refundWalletAtomic({
             userId: order.userId,
-            walletDeducted: order.walletDeducted,
-            creditUsedAmount: order.creditUsedAmount,
+            walletDeducted: refundAmount,
+            creditUsedAmount: 0,
             reference: order._id,
-            description: `Refund for failed order #${order._id}`,
+            description: `Refund for failed order #${order._id} (${usdAmount} USD → ${refundAmount} ${currentCurrency})`,
             session,
         });
 
@@ -374,9 +423,13 @@ const markOrderAsFailed = async (orderId, auditContext = null) => {
             entityId: order._id,
             metadata: {
                 userId: order.userId,
-                walletDeducted: order.walletDeducted,
-                creditUsedAmount: order.creditUsedAmount,
-                totalRefunded: parseFloat((order.walletDeducted + order.creditUsedAmount).toFixed(2)),
+                orderUsdAmount: usdAmount,
+                originalCurrency: order.currency,
+                originalChargedAmount: order.chargedAmount,
+                refundCurrency: currentCurrency,
+                refundRate: conversion.rate,
+                refundAmount,
+                currencyChanged: order.currency !== currentCurrency,
             },
         });
 
@@ -387,8 +440,9 @@ const markOrderAsFailed = async (orderId, auditContext = null) => {
             entityId: order.userId,
             metadata: {
                 orderId: order._id,
-                walletDeducted: order.walletDeducted,
-                creditUsedAmount: order.creditUsedAmount,
+                usdAmount,
+                refundCurrency: currentCurrency,
+                refundAmount,
             },
         });
 

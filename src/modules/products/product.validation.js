@@ -64,6 +64,40 @@ const createProductValidation = [
         .optional()
         .isIn(Object.values(EXECUTION_TYPES))
         .withMessage(`executionType must be one of: ${Object.values(EXECUTION_TYPES).join(', ')}`),
+
+    body('provider')
+        .optional({ nullable: true })
+        .isMongoId().withMessage('provider must be a valid ObjectId'),
+
+    body('providerProduct')
+        .optional({ nullable: true })
+        .isMongoId().withMessage('providerProduct must be a valid ObjectId'),
+
+    body('pricingMode')
+        .optional()
+        .isIn(Object.values(PRICING_MODES))
+        .withMessage(`pricingMode must be one of: ${Object.values(PRICING_MODES).join(', ')}`),
+
+    body('markupType')
+        .optional()
+        .isIn(Object.values(MARKUP_TYPES))
+        .withMessage(`markupType must be one of: ${Object.values(MARKUP_TYPES).join(', ')}`),
+
+    body('markupValue')
+        .optional()
+        .isFloat({ min: 0 }).withMessage('markupValue must be >= 0'),
+
+    body('syncPriceWithProvider')
+        .optional()
+        .isBoolean().withMessage('syncPriceWithProvider must be a boolean'),
+
+    body('enableManualPrice')
+        .optional()
+        .isBoolean().withMessage('enableManualPrice must be a boolean'),
+
+    body('manualPriceAdjustment')
+        .optional()
+        .isFloat().withMessage('manualPriceAdjustment must be a number'),
 ];
 
 // ─── Admin: publish from provider product ────────────────────────────────────
@@ -186,10 +220,30 @@ const updateProductValidation = [
         .optional()
         .isFloat({ min: 0 }).withMessage('markupValue must be >= 0'),
 
+    body('syncPriceWithProvider')
+        .optional()
+        .isBoolean().withMessage('syncPriceWithProvider must be a boolean'),
+
+    body('enableManualPrice')
+        .optional()
+        .isBoolean().withMessage('enableManualPrice must be a boolean'),
+
+    body('manualPriceAdjustment')
+        .optional()
+        .isFloat().withMessage('manualPriceAdjustment must be a number'),
+
     body('executionType')
         .optional()
         .isIn(Object.values(EXECUTION_TYPES))
         .withMessage(`executionType must be one of: ${Object.values(EXECUTION_TYPES).join(', ')}`),
+
+    body('provider')
+        .optional({ nullable: true })
+        .isMongoId().withMessage('provider must be a valid ObjectId'),
+
+    body('providerProduct')
+        .optional({ nullable: true })
+        .isMongoId().withMessage('providerProduct must be a valid ObjectId'),
 ];
 
 module.exports = {

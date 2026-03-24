@@ -49,10 +49,10 @@ const _createTransactionRecord = async ({
 /**
  * Atomically debit a user's wallet for an order.
  *
- * STRICT WALLET-ONLY policy (credit/borrow system removed):
- *   - Orders only proceed when walletBalance >= amount.
- *   - creditLimit / creditUsed fields are NOT used and NOT modified.
- *   - Balance can NEVER go negative.
+ * CREDIT LIMIT (Overdraft) policy:
+ *   - Orders proceed when (walletBalance + creditLimit) >= amount.
+ *   - walletBalance CAN go negative, down to -(creditLimit).
+ *   - creditUsedAmount tracks how much of the credit line was drawn.
  *
  * Uses a MongoDB aggregation-pipeline findOneAndUpdate — the balance check
  * and deduction are ONE atomic DB operation; no TOCTOU race conditions.
@@ -68,7 +68,6 @@ const _createTransactionRecord = async ({
  * @param {ClientSession}   [params.session]   - optional MongoDB session
  *
  * @returns {{ walletDeducted: number, creditUsedAmount: number, transaction: WalletTransaction }}
- *          creditUsedAmount is always 0 (kept for Order schema backward-compat)
  */
 const debitWalletAtomic = async ({ userId, amount, reference = null, description = '', session }) => {
     if (amount <= 0) {
@@ -77,19 +76,23 @@ const debitWalletAtomic = async ({ userId, amount, reference = null, description
 
     const opts = session ? { new: false, session } : { new: false };
 
-    // ── Atomic CAS: only matches when user is ACTIVE and balance is sufficient ─
+    // ── Atomic CAS: matches when user is ACTIVE and (walletBalance + creditLimit) >= amount ──
     const oldUser = await User.findOneAndUpdate(
         {
             _id: userId,
             status: USER_STATUS.ACTIVE,
-            walletBalance: { $gte: amount },   // strict — no credit fallback
+            $expr: {
+                $gte: [
+                    { $add: ['$walletBalance', { $ifNull: ['$creditLimit', 0] }] },
+                    amount,
+                ],
+            },
         },
         [{ $set: { walletBalance: { $subtract: ['$walletBalance', amount] } } }],
         opts
     );
 
     if (!oldUser) {
-        const findOpts = session ? { session } : {};
         const user = session
             ? await User.findById(userId).session(session)
             : await User.findById(userId);
@@ -97,25 +100,30 @@ const debitWalletAtomic = async ({ userId, amount, reference = null, description
         if (user.status !== USER_STATUS.ACTIVE) {
             throw new BusinessRuleError('User account is not active.', 'ACCOUNT_INACTIVE');
         }
-        // Balance is insufficient
-        throw new InsufficientFundsError(amount, user.walletBalance);
+        // Balance + credit limit is insufficient
+        const available = (user.walletBalance || 0) + (user.creditLimit || 0);
+        throw new InsufficientFundsError(amount, available);
     }
+
+    // Calculate how much was drawn from wallet vs credit
+    const oldBalance = oldUser.walletBalance || 0;
+    const newBalance = oldBalance - amount;
+    const walletPortion = Math.min(amount, Math.max(0, oldBalance)); // actual wallet funds used
+    const creditPortion = amount - walletPortion; // remainder came from credit line
 
     // ── Immutable wallet transaction record ───────────────────────────────────
     const transaction = await _createTransactionRecord({
         userId,
         type: TRANSACTION_TYPES.DEBIT,
         amount,
-        balanceBefore: oldUser.walletBalance,
-        balanceAfter: oldUser.walletBalance - amount,
+        balanceBefore: oldBalance,
+        balanceAfter: newBalance,
         reference,
         description,
         session,
     });
 
-    // creditUsedAmount always 0 — preserved so Order schema & refundWalletAtomic
-    // don't need changes (refund restores walletDeducted = amount, creditUsed = 0)
-    return { walletDeducted: amount, creditUsedAmount: 0, transaction };
+    return { walletDeducted: amount, creditUsedAmount: creditPortion, transaction };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

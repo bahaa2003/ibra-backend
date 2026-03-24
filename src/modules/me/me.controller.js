@@ -154,7 +154,14 @@ const getOrder = catchAsync(async (req, res) => {
  * Balance must be >= order cost (credit system removed).
  */
 const placeOrder = catchAsync(async (req, res) => {
-    const { productId, quantity, orderFieldsValues } = req.body;
+    const { productId, quantity, orderFieldsValues, link, target } = req.body;
+
+    // Merge top-level link/target into orderFieldsValues so they always
+    // reach customerInput (SMM providers need these as provider params).
+    const mergedFields = { ...orderFieldsValues };
+    if (link && !mergedFields.link) mergedFields.link = link;
+    if (target && !mergedFields.target) mergedFields.target = target;
+    const finalFields = Object.keys(mergedFields).length > 0 ? mergedFields : null;
 
     const auditContext = {
         actorId: req.user._id,
@@ -168,7 +175,7 @@ const placeOrder = catchAsync(async (req, res) => {
         productId,
         quantity: parseInt(quantity, 10) || 1,
         idempotencyKey: req.headers['idempotency-key'] || null,
-        orderFieldsValues: orderFieldsValues ?? null,
+        orderFieldsValues: finalFields,
         auditContext,
     });
 

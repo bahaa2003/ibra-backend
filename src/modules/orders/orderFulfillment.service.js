@@ -33,6 +33,8 @@ const {
     ACTOR_ROLES,
 } = require('../audit/audit.constants');
 const { toInternalStatus, isTerminal, requiresRefund } = require('../providers/statusMapper');
+const { User } = require('../users/user.model');
+const { convertUsdToUserCurrency } = require('../../services/currencyConverter.service');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IDEMPOTENT REFUND
@@ -40,6 +42,10 @@ const { toInternalStatus, isTerminal, requiresRefund } = require('../providers/s
 
 /**
  * Atomically refund a failed order exactly once.
+ *
+ * CROSS-CURRENCY SAFE:
+ *   Uses order.usdAmount (the USD truth frozen at order time) and converts
+ *   it to the user's CURRENT currency rate before crediting the wallet.
  *
  * Guard: the `refunded` boolean is set to true via a compare-and-swap
  * findOneAndUpdate so concurrent refund calls cannot double-credit the wallet.
@@ -68,12 +74,20 @@ const refundFailedOrder = async (order) => {
             writeConcern: { w: 'majority' },
         });
 
+        // ── Convert USD truth to user's CURRENT currency ─────────────────
+        const userDoc = await User.findById(order.userId).select('currency').session(session);
+        const currentCurrency = userDoc?.currency ?? 'USD';
+        const usdAmount = order.usdAmount || 0;
+
+        const conversion = await convertUsdToUserCurrency(usdAmount, currentCurrency);
+        const refundAmount = conversion.finalAmount;
+
         await refundWalletAtomic({
             userId: order.userId,
-            walletDeducted: order.walletDeducted,
-            creditUsedAmount: order.creditUsedAmount,
+            walletDeducted: refundAmount,
+            creditUsedAmount: 0,
             reference: order._id,
-            description: `Auto-refund: provider order ${order.providerOrderId ?? 'N/A'} failed`,
+            description: `Auto-refund: provider order ${order.providerOrderId ?? 'N/A'} failed (${usdAmount} USD → ${refundAmount} ${currentCurrency})`,
             session,
         });
 
@@ -89,9 +103,12 @@ const refundFailedOrder = async (order) => {
             metadata: {
                 orderId: order._id.toString(),
                 providerOrderId: order.providerOrderId,
-                walletDeducted: order.walletDeducted,
-                creditUsedAmount: order.creditUsedAmount,
-                totalRefunded: parseFloat((order.walletDeducted + order.creditUsedAmount).toFixed(2)),
+                orderUsdAmount: usdAmount,
+                originalCurrency: order.currency,
+                refundCurrency: currentCurrency,
+                refundRate: conversion.rate,
+                refundAmount,
+                currencyChanged: order.currency !== currentCurrency,
             },
         });
 
@@ -104,7 +121,9 @@ const refundFailedOrder = async (order) => {
             metadata: {
                 orderId: order._id.toString(),
                 providerOrderId: order.providerOrderId,
-                amount: parseFloat((order.walletDeducted + order.creditUsedAmount).toFixed(2)),
+                usdAmount,
+                refundCurrency: currentCurrency,
+                refundAmount,
                 reason: 'PROVIDER_ORDER_FAILED',
             },
         });
@@ -120,13 +139,16 @@ const refundFailedOrder = async (order) => {
         try { session.endSession(); } catch (_) { /* already ended */ }
     }
 };
+const { getProviderAdapter } = require('../providers/adapters/adapter.factory');
+const Provider = require('../providers/provider.model');
+const { Product } = require('../products/product.model');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EXECUTE ORDER (called immediately after createOrder commits)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * executeOrder(orderId, provider, auditContext?)
+ * executeOrder(orderId, provider?, auditContext?)
  *
  * Calls provider.placeOrder(), interprets the result, and updates the Order.
  *
@@ -135,17 +157,25 @@ const refundFailedOrder = async (order) => {
  * Case C: success=true  + Cancelled  → FAILED + refund
  * Case D: success=false              → FAILED + refund
  *
+ * If no provider adapter is passed, the function self-resolves it from
+ * Product.provider. If that also fails, the order is marked FAILED + refund.
+ *
  * This function NEVER throws — all errors are caught, the order is marked
  * FAILED, and a refund is attempted.
  *
  * @param {string|ObjectId} orderId
- * @param {Object}          provider       - adapter instance (RoyalCrownProvider or mock)
+ * @param {Object|null}     [provider]      - adapter instance (null = self-resolve)
  * @param {Object|null}     [auditContext]
  * @returns {Promise<{ order: Order, placed: boolean, refunded: boolean }>}
  */
-const executeOrder = async (orderId, provider, auditContext = null) => {
+const executeOrder = async (orderId, provider = null, auditContext = null) => {
+    // ─── TOP-LEVEL CRASH GUARD ─────────────────────────────────────────────
+    // Wraps the entire function so ANY crash (parsing, DB, provider resolution)
+    // marks the order FAILED + refund instead of leaving it stuck in PROCESSING.
+    try {
+
     const order = await Order.findById(orderId)
-        .populate('productId', 'name providerProduct providerMapping');
+        .populate('productId', 'name providerProduct providerMapping provider');
     if (!order) {
         console.error(`[Fulfillment] executeOrder: order ${orderId} not found`);
         return { order: null, placed: false, refunded: false };
@@ -160,6 +190,57 @@ const executeOrder = async (orderId, provider, auditContext = null) => {
     const actorRole = auditContext?.actorRole ?? ACTOR_ROLES.SYSTEM;
     const ipAddress = auditContext?.ipAddress ?? null;
     const userAgent = auditContext?.userAgent ?? null;
+
+    // ── Self-resolve provider adapter if none was passed ──────────────────
+    let resolvedProvider = provider;
+    if (!resolvedProvider) {
+        try {
+            const productProviderId = order.productId?.provider;
+            if (!productProviderId) {
+                throw new Error('Product has no Provider linked.');
+            }
+            const providerDoc = await Provider.findById(productProviderId);
+            if (!providerDoc) {
+                throw new Error(`Provider ${productProviderId} not found in DB.`);
+            }
+            if (!providerDoc.isActive) {
+                throw new Error(`Provider '${providerDoc.name}' is inactive.`);
+            }
+            resolvedProvider = getProviderAdapter(providerDoc);
+        } catch (resolveErr) {
+            console.error(`[Fulfillment] Provider resolution failed for order ${orderId}:`, resolveErr.message);
+
+            // Mark FAILED with clear diagnostic message
+            const now = new Date();
+            await Order.findByIdAndUpdate(orderId, {
+                $set: {
+                    status: ORDER_STATUS.FAILED,
+                    providerRawResponse: { error: resolveErr.message },
+                    failedAt: now,
+                    lastCheckedAt: now,
+                },
+            });
+
+            createAuditLog({
+                actorId, actorRole, ipAddress, userAgent,
+                action: ORDER_ACTIONS.FAILED,
+                entityType: ENTITY_TYPES.ORDER,
+                entityId: orderId,
+                metadata: { orderId: orderId.toString(), reason: 'PROVIDER_RESOLUTION_FAILED', error: resolveErr.message },
+            });
+
+            // Refund the user
+            let refundIssued = false;
+            try {
+                const freshOrder = await Order.findById(orderId);
+                refundIssued = await refundFailedOrder(freshOrder);
+            } catch (refundErr) {
+                console.error(`[Fulfillment] Refund FAILED for order ${orderId}:`, refundErr.message);
+            }
+
+            return { order: await Order.findById(orderId), placed: false, refunded: refundIssued };
+        }
+    }
 
     // ── Resolve externalProductId via the 3-layer chain ─────────────────────
     // Order → Platform Product → ProviderProduct → externalProductId
@@ -184,7 +265,7 @@ const executeOrder = async (orderId, provider, auditContext = null) => {
 
     let result;
     try {
-        result = await provider.placeOrder({
+        result = await resolvedProvider.placeOrder({
             externalProductId: externalProductId ?? String(order.productId._id),
             quantity: order.quantity,
             ...mappedCustomerFields,   // ← spread translated customer fields onto params
@@ -321,6 +402,33 @@ const executeOrder = async (orderId, provider, auditContext = null) => {
     });
 
     return { order: await Order.findById(orderId), placed: true, refunded: false };
+
+    // ─── END OF TOP-LEVEL CRASH GUARD ──────────────────────────────────────
+    } catch (fatalErr) {
+        // Something completely unexpected crashed — mark FAILED + refund
+        console.error(`[Fulfillment] FATAL crash in executeOrder for ${orderId}:`, fatalErr);
+
+        try {
+            const now = new Date();
+            await Order.findByIdAndUpdate(orderId, {
+                $set: {
+                    status: ORDER_STATUS.FAILED,
+                    providerRawResponse: { fatalError: fatalErr.message, stack: fatalErr.stack },
+                    failedAt: now,
+                    lastCheckedAt: now,
+                },
+            });
+
+            const freshOrder = await Order.findById(orderId);
+            if (freshOrder) {
+                await refundFailedOrder(freshOrder);
+            }
+        } catch (cleanupErr) {
+            console.error(`[Fulfillment] Cleanup also failed for ${orderId}:`, cleanupErr.message);
+        }
+
+        return { order: await Order.findById(orderId).catch(() => null), placed: false, refunded: false };
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

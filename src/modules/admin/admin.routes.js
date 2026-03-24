@@ -124,6 +124,7 @@ router.patch('/users/:id/reject', usersCtrl.rejectUser);
 // Phase 4 gap-bridged routes
 router.patch('/users/:id/role', validateBody(schemas.updateUserRole), usersCtrl.updateUserRole);
 router.patch('/users/:id/currency', validateBody(schemas.updateUserCurrency), usersCtrl.updateUserCurrency);
+router.patch('/users/:id/credit-limit', validateBody(schemas.updateCreditLimit), usersCtrl.updateUserCreditLimit);
 router.post('/users/:id/reset-password', validateBody(schemas.resetUserPassword), usersCtrl.resetUserPassword);
 router.patch('/users/:id/avatar', avatarUpload.single('avatar'), usersCtrl.updateUserAvatar);
 
@@ -282,19 +283,39 @@ router.patch('/deposits/:id/approve', validateBody(schemas.approveDeposit), catc
     const deposit = await depositSvc.approveDeposit(
         req.params.id,
         req.user._id,
-        req.body.overrideAmount ?? null,
         { actorId: req.user._id, actorRole: 'ADMIN', ipAddress: req.ip, userAgent: req.get('User-Agent') }
     );
     sendSuccess(res, deposit, 'Deposit approved and wallet credited.');
 }));
 
-router.patch('/deposits/:id/reject', catchAsync(async (req, res) => {
+router.patch('/deposits/:id/reject', validateBody(schemas.approveDeposit), catchAsync(async (req, res) => {
     const deposit = await depositSvc.rejectDeposit(
         req.params.id,
         req.user._id,
+        req.body.adminNotes ?? null,
         { actorId: req.user._id, actorRole: 'ADMIN', ipAddress: req.ip, userAgent: req.get('User-Agent') }
     );
     sendSuccess(res, deposit, 'Deposit request rejected.');
+}));
+
+/**
+ * PATCH /admin/deposits/:id/review
+ * Unified review endpoint — approve or reject a deposit in one call.
+ * Body: { status: 'APPROVED' | 'REJECTED', adminNotes?: string }
+ */
+router.patch('/deposits/:id/review', validateBody(schemas.reviewDeposit), catchAsync(async (req, res) => {
+    const { id } = req.params;
+    const { status, adminNotes } = req.body;
+    const auditCtx = { actorId: req.user._id, actorRole: 'ADMIN', ipAddress: req.ip, userAgent: req.get('User-Agent') };
+
+    let deposit;
+    if (status === 'APPROVED') {
+        deposit = await depositSvc.approveDeposit(id, req.user._id, auditCtx);
+        sendSuccess(res, deposit, 'Deposit approved and wallet credited.');
+    } else {
+        deposit = await depositSvc.rejectDeposit(id, req.user._id, adminNotes || null, auditCtx);
+        sendSuccess(res, deposit, 'Deposit request rejected.');
+    }
 }));
 
 router.patch('/deposits/:id', validateBody(schemas.updateDeposit), catchAsync(async (req, res) => {
@@ -323,5 +344,12 @@ router.get('/audit/actor/:actorId', catchAsync(async (req, res) => {
     });
     sendPaginated(res, result.logs, result.pagination, 'Actor audit logs retrieved');
 }));
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CATEGORIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const categoryRoutes = require('../categories/category.routes');
+router.use('/categories', categoryRoutes);
 
 module.exports = router;

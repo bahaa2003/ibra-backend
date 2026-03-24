@@ -41,52 +41,75 @@ const PROVIDER_STATUS = Object.freeze({
  * Map keyed by lowercase provider status → internal ORDER_STATUS.
  *
  * Includes canonical values (Completed / Pending / Cancelled) plus
- * provider-specific raw strings from Toros and Alkasr as defensive aliases.
- * Adapters always normalise before returning, so these aliases exist
- * purely as a safety net.
+ * provider-specific raw strings from Royal Crown, Toros, and Alkasr
+ * as defensive aliases.
  *
  * @private
  */
 const _MAP = {
-    // ── Canonical (Royal Crown / Toros normalised output) ─────────────────────
-    completed: ORDER_STATUS.COMPLETED,
-    pending: ORDER_STATUS.PROCESSING,
-    cancelled: ORDER_STATUS.FAILED,
-    // defensive spelling variants
-    canceled: ORDER_STATUS.FAILED,
-    failed: ORDER_STATUS.FAILED,
+    // ── COMPLETED ────────────────────────────────────────────────────────────
+    completed:   ORDER_STATUS.COMPLETED,
+    complete:    ORDER_STATUS.COMPLETED,
+    success:     ORDER_STATUS.COMPLETED,
+    done:        ORDER_STATUS.COMPLETED,
+    accept:      ORDER_STATUS.COMPLETED,
+    accepted:    ORDER_STATUS.COMPLETED,
+    ok:          ORDER_STATUS.COMPLETED,
+    delivered:   ORDER_STATUS.COMPLETED,
+    fulfilled:   ORDER_STATUS.COMPLETED,
 
-    // ── Torosfon Store raw status strings ─────────────────────────────────────
-    success: ORDER_STATUS.COMPLETED,
-    done: ORDER_STATUS.COMPLETED,
-    processing: ORDER_STATUS.PROCESSING,
-    in_progress: ORDER_STATUS.PROCESSING,
-    queued: ORDER_STATUS.PROCESSING,
-    rejected: ORDER_STATUS.FAILED,
-    error: ORDER_STATUS.FAILED,
+    // ── PROCESSING (still in-flight, keep polling) ──────────────────────────
+    processing:    ORDER_STATUS.PROCESSING,
+    in_progress:   ORDER_STATUS.PROCESSING,
+    'in progress': ORDER_STATUS.PROCESSING,
+    inprogress:    ORDER_STATUS.PROCESSING,
+    in_process:    ORDER_STATUS.PROCESSING,
+    running:       ORDER_STATUS.PROCESSING,
+    active:        ORDER_STATUS.PROCESSING,
 
-    // ── Alkasr VIP raw status strings ─────────────────────────────────────────
-    accept: ORDER_STATUS.COMPLETED,
-    accepted: ORDER_STATUS.COMPLETED,
-    wait: ORDER_STATUS.PROCESSING,
-    waiting: ORDER_STATUS.PROCESSING,
-    in_process: ORDER_STATUS.PROCESSING,
-    reject: ORDER_STATUS.FAILED,
-    cancel: ORDER_STATUS.FAILED,
+    // ── PENDING (queued, not started yet) ────────────────────────────────────
+    pending:   ORDER_STATUS.PROCESSING,   // providers say "Pending" when they mean "working on it"
+    queued:    ORDER_STATUS.PROCESSING,
+    wait:      ORDER_STATUS.PROCESSING,
+    waiting:   ORDER_STATUS.PROCESSING,
+    awaiting:  ORDER_STATUS.PROCESSING,
+    new:       ORDER_STATUS.PROCESSING,
+    created:   ORDER_STATUS.PROCESSING,
+
+    // ── PARTIAL (treat as COMPLETED — partial delivery is still delivered) ───
+    partial:              ORDER_STATUS.COMPLETED,
+    partially_completed:  ORDER_STATUS.COMPLETED,
+    partial_complete:     ORDER_STATUS.COMPLETED,
+
+    // ── FAILED ──────────────────────────────────────────────────────────────
+    cancelled:  ORDER_STATUS.FAILED,
+    canceled:   ORDER_STATUS.FAILED,
+    cancel:     ORDER_STATUS.FAILED,
+    failed:     ORDER_STATUS.FAILED,
+    fail:       ORDER_STATUS.FAILED,
+    error:      ORDER_STATUS.FAILED,
+    rejected:   ORDER_STATUS.FAILED,
+    reject:     ORDER_STATUS.FAILED,
+    refunded:   ORDER_STATUS.FAILED,
+    expired:    ORDER_STATUS.FAILED,
 };
 
 /**
  * Convert a provider status string to the internal ORDER_STATUS constant.
  *
+ * Defensive: if the status is not recognised, logs a warning and
+ * falls back to PROCESSING (so the order keeps getting polled rather
+ * than crashing the pipeline).
+ *
  * @param {string} providerStatus   - raw string from the provider API
  * @returns {string}                - one of ORDER_STATUS values
- * @throws {Error}                  - if the status is not recognised
  */
 const toInternalStatus = (providerStatus) => {
     const key = String(providerStatus ?? '').toLowerCase().trim();
     const internal = _MAP[key];
     if (!internal) {
-        throw new Error(`[statusMapper] Unknown provider status: '${providerStatus}'`);
+        console.warn(`[statusMapper] Unknown provider status: '${providerStatus}' — defaulting to PROCESSING`);
+        return ORDER_STATUS.PROCESSING;
     }
     return internal;
 };
@@ -99,12 +122,8 @@ const toInternalStatus = (providerStatus) => {
  * @returns {boolean}
  */
 const isTerminal = (providerStatus) => {
-    const key = String(providerStatus ?? '').toLowerCase().trim();
-    return key === 'completed' || key === 'cancelled' || key === 'canceled' || key === 'failed'
-        // Alkasr accept/reject
-        || key === 'accept' || key === 'accepted' || key === 'reject' || key === 'rejected'
-        // Toros
-        || key === 'success' || key === 'done' || key === 'error';
+    const mapped = toInternalStatus(providerStatus);
+    return mapped === ORDER_STATUS.COMPLETED || mapped === ORDER_STATUS.FAILED;
 };
 
 /**
@@ -115,11 +134,10 @@ const isTerminal = (providerStatus) => {
  */
 const requiresRefund = (providerStatus) => {
     const key = String(providerStatus ?? '').toLowerCase().trim();
-    return key === 'cancelled' || key === 'canceled' || key === 'failed'
-        // Alkasr reject
-        || key === 'reject' || key === 'rejected' || key === 'cancel'
-        // Toros
-        || key === 'error';
+    return key === 'cancelled' || key === 'canceled' || key === 'cancel'
+        || key === 'failed'    || key === 'fail'     || key === 'error'
+        || key === 'reject'    || key === 'rejected'  || key === 'refunded'
+        || key === 'expired';
 };
 
 module.exports = { PROVIDER_STATUS, toInternalStatus, isTerminal, requiresRefund };

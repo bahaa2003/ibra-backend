@@ -83,6 +83,12 @@ const updateUserAvatar = catchAsync(async (req, res) => {
     sendSuccess(res, { user }, 'User avatar updated');
 });
 
+// PATCH /admin/users/:id/credit-limit
+const updateUserCreditLimit = catchAsync(async (req, res) => {
+    const user = await svc.updateUserCreditLimit(req.params.id, req.body.creditLimit, req.user._id);
+    sendSuccess(res, { user }, 'User credit limit updated');
+});
+
 module.exports = {
     listUsers,
     getUserById,
@@ -92,6 +98,7 @@ module.exports = {
     rejectUser,
     updateUserRole,
     updateUserCurrency,
+    updateUserCreditLimit,
     resetUserPassword,
     updateUserAvatar,
 };

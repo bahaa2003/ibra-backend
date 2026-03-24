@@ -36,13 +36,23 @@ const getSettingValue = async (key, defaultValue = null) => {
 // ─── Update ───────────────────────────────────────────────────────────────────
 
 const updateSetting = async (key, value, adminId) => {
-    const setting = await Setting.findOne({ key });
-    if (!setting) throw new NotFoundError(`Setting '${key}' does not exist.`);
+    let setting = await Setting.findOne({ key });
+    const before = setting ? setting.value : undefined;
 
-    const before = setting.value;
-    setting.value = value;
-    setting.updatedBy = adminId;
-    await setting.save();
+    if (setting) {
+        setting.value = value;
+        setting.updatedBy = adminId;
+        await setting.save();
+    } else {
+        // Key does not exist yet — auto-create it (upsert behaviour).
+        // This handles cases where the database predates newly-added seed keys.
+        setting = await Setting.create({
+            key,
+            value,
+            description: '',
+            updatedBy: adminId,
+        });
+    }
 
     createAuditLog({
         actorId: adminId,

@@ -198,39 +198,56 @@ class RoyalCrownAdapter extends BaseProviderAdapter {
                 }
             );
 
-            // Check for explicit API-level failure (success: false in body)
-            if (data.success === false) {
+            // ── Normalise response structure ────────────────────────────────
+            // Some providers wrap everything inside a `data` sub-object:
+            //   { success: true, data: { order_id: 301069, order_status: 'Completed' } }
+            // Others return flat:
+            //   { order: 123, status: 'Pending' }
+            // We handle both by checking nested first, then flat.
+            const nested = data.data ?? {};   // the inner data wrapper (if any)
+
+            // ── Success check ────────────────────────────────────────────────
+            // Provider may signal failure at either level
+            const isSuccess = data.success !== false && nested.success !== false;
+
+            if (!isSuccess) {
                 return {
                     success: false,
                     providerOrderId: null,
                     providerStatus: 'Cancelled',
                     rawResponse: data,
-                    errorMessage: data.message ?? data.error ?? 'Provider rejected the order',
+                    errorMessage: nested.message ?? data.message ?? nested.error ?? data.error ?? 'Provider rejected the order',
                 };
             }
 
-            // Extract order ID from various possible field names
-            const providerOrderId = data.order
-                ?? data.order_id
-                ?? data.orderId
-                ?? data.id
-                ?? null;
+            // ── Extract order ID ─────────────────────────────────────────────
+            // Check nested data first (data.data.order_id), then flat fields
+            const providerOrderId =
+                nested.order_id ?? nested.orderId ?? nested.order ?? nested.id ??
+                data.order_id   ?? data.orderId   ?? data.order   ?? data.id   ??
+                null;
 
             if (!providerOrderId) {
-                // HTTP 200 but no order ID → logical failure
+                // HTTP 200 + success: true but no order ID → logical failure
                 return {
                     success: false,
                     providerOrderId: null,
                     providerStatus: 'Cancelled',
                     rawResponse: data,
-                    errorMessage: data.error ?? data.message ?? 'Provider returned no order ID',
+                    errorMessage: nested.error ?? data.error ?? nested.message ?? data.message ?? 'Provider returned no order ID',
                 };
             }
+
+            // ── Extract status ───────────────────────────────────────────────
+            const providerStatus =
+                nested.order_status ?? nested.status ??
+                data.order_status   ?? data.status   ??
+                'Pending';
 
             return {
                 success: true,
                 providerOrderId: parseInt(String(providerOrderId), 10),
-                providerStatus: data.status ?? 'Pending',
+                providerStatus,
                 rawResponse: data,
                 errorMessage: null,
             };
@@ -272,9 +289,23 @@ class RoyalCrownAdapter extends BaseProviderAdapter {
 
         console.log(`[RoyalCrown] checkOrder ← raw response:`, JSON.stringify(data));
 
-        const providerStatus = data.status ?? 'Pending';
+        // ── Normalise nested response ────────────────────────────────────
+        // Provider may return: { success: true, data: { order_id, order_status, ... } }
+        // or flat:             { status: 'Pending', charge: '1.50', ... }
+        const nested = data.data ?? {};
+
+        const providerStatus =
+            nested.order_status ?? nested.status ??
+            data.order_status   ?? data.status   ??
+            'Pending';
+
+        const resolvedOrderId =
+            nested.order_id ?? nested.orderId ??
+            data.order_id   ?? data.orderId   ??
+            orderId;
+
         return {
-            providerOrderId: parseInt(String(orderId), 10),
+            providerOrderId: parseInt(String(resolvedOrderId), 10),
             providerStatus,
             unifiedStatus: this.toUnifiedStatus(providerStatus),
             rawResponse: data,

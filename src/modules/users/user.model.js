@@ -158,10 +158,14 @@ const userSchema = new mongoose.Schema(
         },
 
         // ── Wallet ───────────────────────────────────────────────────────────
+        /**
+         * User's wallet balance in their local currency.
+         * CAN be negative when a user spends against their creditLimit.
+         * Minimum effective balance = -(creditLimit).
+         */
         walletBalance: {
             type: Number,
             default: 0,
-            min: [0, 'Wallet balance cannot be negative'],
         },
 
         creditLimit: {
@@ -250,12 +254,14 @@ userSchema.virtual('isActive').get(function () {
 });
 
 /**
- * Total spendable amount = wallet balance only.
- * (Credit system removed — walletBalance is the sole source of funds.)
+ * Total spendable amount = wallet balance + credit limit.
+ * This is the maximum amount the user can spend in a single order.
+ * walletBalance may be negative (up to -creditLimit) after credit usage.
  */
 userSchema.virtual('availableBalance').get(function () {
-    const balance = this.walletBalance || 0; // تحديد 0 كقيمة افتراضية
-    return parseFloat(balance.toFixed(2));
+    const balance = this.walletBalance || 0;
+    const credit = this.creditLimit || 0;
+    return parseFloat((balance + credit).toFixed(2));
 });
 
 /** How much credit remains available (undrawn). */

@@ -55,6 +55,10 @@ const DEFAULT_SETTINGS = [
     { key: 'maintenanceMode', value: false, description: 'When true, new orders are blocked platform-wide' },
     { key: 'maxWalletAdjustment', value: 10000, description: 'Maximum single manual wallet adjustment (admin)' },
     { key: 'defaultPaginationLimit', value: 20, description: 'Default page size for list endpoints' },
+    { key: 'paymentGroups', value: [], description: 'Dynamic payment methods grouped by category' },
+    { key: 'paymentCountryAccounts', value: [], description: 'Country-specific payment accounts' },
+    { key: 'paymentInstructions', value: '', description: 'General payment instructions shown to customers' },
+    { key: 'whatsappNumber', value: '', description: 'WhatsApp number for customer support' },
 ];
 
 /**

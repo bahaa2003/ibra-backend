@@ -33,7 +33,7 @@ const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppErr
  *
  * @param {number} basePrice   - Raw product price (>= 0)
  * @param {number} percentage  - Group markup percentage (>= 0)
- * @returns {number} finalPrice rounded to 2 decimal places
+ * @returns {number} finalPrice with full precision (rounding deferred to final charge)
  * @throws {BusinessRuleError} if inputs are invalid
  */
 const calculateFinalPrice = (basePrice, percentage) => {
@@ -51,7 +51,10 @@ const calculateFinalPrice = (basePrice, percentage) => {
     }
 
     const markup = basePrice * (percentage / 100);
-    return parseFloat((basePrice + markup).toFixed(2));
+    // Retain full precision — do NOT round here. Rounding happens at the
+    // final chargedAmount step in order.service.js so micro-prices (e.g.
+    // $0.0002/unit × 10000 qty) are not prematurely zeroed out.
+    return basePrice + markup;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -100,8 +103,15 @@ const calculateUserPrice = async (userId, basePrice, session = null) => {
         );
     }
 
-    const markupPercentage = group.percentage;
-    const finalPrice = calculateFinalPrice(basePrice, markupPercentage);
+    // Safe casting — prevent NaN if group.percentage is undefined or non-numeric
+    const markupPercentage = Number.isFinite(Number(group.percentage))
+        ? Number(group.percentage)
+        : 0;
+
+    // Safe casting — prevent NaN if basePrice is somehow non-numeric
+    const safeBasePrice = Number.isFinite(Number(basePrice)) ? Number(basePrice) : 0;
+
+    const finalPrice = calculateFinalPrice(safeBasePrice, markupPercentage);
 
     return {
         basePrice,
