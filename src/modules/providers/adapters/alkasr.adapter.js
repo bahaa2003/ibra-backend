@@ -245,7 +245,7 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
 
             return {
                 success: true,
-                providerOrderId: parseInt(String(providerOrderId), 10),
+                providerOrderId: String(providerOrderId),
                 providerStatus: _normaliseAlkasrStatus(innerData.status ?? data.status),
                 rawResponse: data,
                 errorMessage: null,
@@ -276,14 +276,11 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
         const endpoint = '/client/api/check';
         const params = { orders: JSON.stringify([orderId]) };
 
-        console.log(`[AlkasrVip] checkOrder → GET ${this.provider.baseUrl}${endpoint}`, {
-            params,
-            headers: { 'api-token': '***' },
-        });
+
 
         const { data } = await this._client.get(endpoint, { params });
 
-        console.log(`[AlkasrVip] checkOrder ← raw response:`, JSON.stringify(data));
+
 
         // Response may be an array, object map, or wrapped in .data
         const result = Array.isArray(data)
@@ -292,7 +289,7 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
 
         const providerStatus = _normaliseAlkasrStatus(result?.status);
         return {
-            providerOrderId: parseInt(String(result?.order_id ?? orderId), 10),
+            providerOrderId: String(result?.order_id ?? orderId),
             providerStatus,
             unifiedStatus: this.toUnifiedStatus(result?.status),
             rawResponse: data,
@@ -317,7 +314,7 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
         // Response may be an array or object map
         if (Array.isArray(data)) {
             return data.map((item) => ({
-                providerOrderId: parseInt(String(item.order_id ?? item.id), 10),
+                providerOrderId: String(item.order_id ?? item.id),
                 providerStatus: _normaliseAlkasrStatus(item.status),
                 rawResponse: item,
             }));
@@ -326,7 +323,7 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
         const list = data.data ?? data;
         if (Array.isArray(list)) {
             return list.map((item) => ({
-                providerOrderId: parseInt(String(item.order_id ?? item.id), 10),
+                providerOrderId: String(item.order_id ?? item.id),
                 providerStatus: _normaliseAlkasrStatus(item.status),
                 rawResponse: item,
             }));
@@ -334,7 +331,7 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
 
         // Object map: { "123": { status: "..." }, ... }
         return Object.entries(list).map(([id, item]) => ({
-            providerOrderId: parseInt(id, 10),
+            providerOrderId: String(id),
             providerStatus: _normaliseAlkasrStatus(item.status),
             rawResponse: item,
         }));

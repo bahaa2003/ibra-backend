@@ -280,14 +280,11 @@ class RoyalCrownAdapter extends BaseProviderAdapter {
         const endpoint = '/api/CheckOrder';
         const params = { order_id: orderId };
 
-        console.log(`[RoyalCrown] checkOrder → GET ${this.provider.baseUrl}${endpoint}`, {
-            params,
-            headers: { 'api-token': '***' },
-        });
+
 
         const { data } = await this._client.get(endpoint, { params });
 
-        console.log(`[RoyalCrown] checkOrder ← raw response:`, JSON.stringify(data));
+
 
         // ── Normalise nested response ────────────────────────────────────
         // Provider may return: { success: true, data: { order_id, order_status, ... } }

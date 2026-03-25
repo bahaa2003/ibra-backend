@@ -36,16 +36,23 @@ const getTransactionHistory = catchAsync(async (req, res) => {
 
 // POST /admin/wallets/:userId/add
 const addFunds = catchAsync(async (req, res) => {
-    const { amount, reason } = req.body;
-    const result = await svc.addFunds(req.params.userId, amount, reason, req.user._id);
+    const { amount, reason, description } = req.body;
+    const result = await svc.addFunds(req.params.userId, amount, reason || description, req.user._id);
     sendCreated(res, { transaction: result.transaction }, 'Funds added to wallet');
 });
 
 // POST /admin/wallets/:userId/deduct
 const deductFunds = catchAsync(async (req, res) => {
-    const { amount, reason } = req.body;
-    const result = await svc.deductFunds(req.params.userId, amount, reason, req.user._id);
+    const { amount, reason, description } = req.body;
+    const result = await svc.deductFunds(req.params.userId, amount, reason || description, req.user._id);
     sendSuccess(res, { transaction: result.transaction }, 'Funds deducted from wallet');
 });
 
-module.exports = { listWallets, getWallet, getTransactionHistory, addFunds, deductFunds };
+// PUT /admin/wallets/:userId/set
+const setBalance = catchAsync(async (req, res) => {
+    const { targetBalance, reason, description } = req.body;
+    const result = await svc.setBalance(req.params.userId, targetBalance, reason || description, req.user._id);
+    sendSuccess(res, { transaction: result.transaction, user: result.user }, 'Balance set successfully');
+});
+
+module.exports = { listWallets, getWallet, getTransactionHistory, addFunds, deductFunds, setBalance };

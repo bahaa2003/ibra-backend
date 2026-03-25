@@ -39,9 +39,25 @@ app.use(helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
     crossOriginEmbedderPolicy: false,
 }));
+// ── CORS ──────────────────────────────────────────────────────────────────────
+const getAllowedOrigins = () => {
+    if (config.env === 'production') {
+        const raw = process.env.ALLOWED_ORIGINS;
+        if (!raw || !raw.trim()) {
+            throw new Error(
+                '[SECURITY] ALLOWED_ORIGINS env var is not set. ' +
+                'Refusing to start in production with open CORS. ' +
+                'Set ALLOWED_ORIGINS to a comma-separated list of allowed origins.'
+            );
+        }
+        return raw.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    return '*'; // development / test — allow all
+};
+
 app.use(
     cors({
-        origin: config.env === 'production' ? process.env.ALLOWED_ORIGINS : '*',
+        origin: getAllowedOrigins(),
         methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
     })
 );

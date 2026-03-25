@@ -168,6 +168,66 @@ const deleteUser = async (id, adminId) => {
     return user;
 };
 
+// ─── List Deleted ──────────────────────────────────────────────────────────────
+
+/**
+ * Admin list of soft-deleted users.
+ */
+const listDeletedUsers = async ({
+    page = 1,
+    limit = 100,
+} = {}) => {
+    limit = Math.min(limit, 200);
+    const skip = (page - 1) * limit;
+
+    const filter = { deletedAt: { $ne: null } };
+    const sort = { deletedAt: -1 };
+
+    const [users, total] = await Promise.all([
+        User.find(filter)
+            .select('-password -emailVerificationToken -emailVerificationExpires')
+            .populate('groupId', 'name percentage')
+            .sort(sort)
+            .skip(skip)
+            .limit(limit),
+        User.countDocuments(filter),
+    ]);
+
+    return {
+        users,
+        pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    };
+};
+
+// ─── Restore (un-delete) ───────────────────────────────────────────────────────
+
+/**
+ * Restore a soft-deleted user. Clears deletedAt and resets status to PENDING
+ * so the admin can re-approve when ready.
+ */
+const restoreUser = async (id, adminId) => {
+    const user = await _findOrFail(id);
+
+    if (!user.deletedAt) {
+        throw new BusinessRuleError('User is not deleted.', 'NOT_DELETED');
+    }
+
+    user.deletedAt = null;
+    user.status = USER_STATUS.ACTIVE;
+    await user.save();
+
+    createAuditLog({
+        actorId: adminId,
+        actorRole: ACTOR_ROLES.ADMIN,
+        action: ADMIN_ACTIONS.USER_UPDATED,
+        entityType: ENTITY_TYPES.USER,
+        entityId: user._id,
+        metadata: { action: 'restore', email: user.email, restoredAt: new Date() },
+    });
+
+    return user;
+};
+
 // ─── Approve / Reject ──────────────────────────────────────────────────────────
 // These already exist in user.service.js. We proxy them here so all
 // admin user operations come through a single module.
@@ -352,9 +412,11 @@ const updateUserCreditLimit = async (id, creditLimit, adminId) => {
 
 module.exports = {
     listUsers,
+    listDeletedUsers,
     getUserById,
     updateUser,
     deleteUser,
+    restoreUser,
     approveUser,
     rejectUser,
     updateUserRole,

@@ -46,6 +46,22 @@ const deleteUser = catchAsync(async (req, res) => {
     sendSuccess(res, { user }, 'User soft-deleted');
 });
 
+// GET /admin/users/deleted
+const listDeletedUsers = catchAsync(async (req, res) => {
+    const { page, limit } = req.query;
+    const result = await svc.listDeletedUsers({
+        page: parseInt(page ?? 1, 10),
+        limit: parseInt(limit ?? 100, 10),
+    });
+    sendPaginated(res, result.users, result.pagination, 'Deleted users retrieved');
+});
+
+// PATCH /admin/users/:id/restore
+const restoreUser = catchAsync(async (req, res) => {
+    const user = await svc.restoreUser(req.params.id, req.user._id);
+    sendSuccess(res, { user }, 'User restored');
+});
+
 // PATCH /admin/users/:id/approve
 const approveUser = catchAsync(async (req, res) => {
     const user = await svc.approveUser(req.params.id, req.user._id);
@@ -91,9 +107,11 @@ const updateUserCreditLimit = catchAsync(async (req, res) => {
 
 module.exports = {
     listUsers,
+    listDeletedUsers,
     getUserById,
     updateUser,
     deleteUser,
+    restoreUser,
     approveUser,
     rejectUser,
     updateUserRole,

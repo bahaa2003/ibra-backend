@@ -45,4 +45,18 @@ const authLimiter = rateLimit({
     },
 });
 
-module.exports = { apiLimiter, authLimiter };
+// ── Wallet Mutation Rate Limiter ──────────────────────────────────────────────
+
+const walletLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,    // 15 minutes
+    max: 20,                      // 20 wallet mutations per window per IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        success: false,
+        code: 'WALLET_RATE_LIMIT_EXCEEDED',
+        message: 'Too many wallet operations. Please try again after 15 minutes.',
+    },
+});
+
+module.exports = { apiLimiter, authLimiter, walletLimiter };

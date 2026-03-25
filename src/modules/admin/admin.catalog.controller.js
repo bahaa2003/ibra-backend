@@ -210,7 +210,6 @@ const createProduct = catchAsync(async (req, res) => {
  * }
  */
 const createProductFromProvider = catchAsync(async (req, res) => {
-    console.log('📦 FROM-PROVIDER REQ.BODY:', JSON.stringify(req.body, null, 2));
 
     const {
         providerProductId,
@@ -248,16 +247,11 @@ const createProductFromProvider = catchAsync(async (req, res) => {
             displayOrder,
             createdBy: req.user._id,
         });
-        console.log('✅ PRODUCT CREATED:', product._id);
+
 
         sendCreated(res, product, 'Product published from provider product.');
     } catch (err) {
-        console.error('❌ FROM-PROVIDER ERROR:', err.message);
-        if (err.errors) {
-            Object.entries(err.errors).forEach(([field, e]) => {
-                console.error(`   → Field "${field}": ${e.message}`);
-            });
-        }
+
         throw err; // re-throw so catchAsync sends proper response
     }
 });

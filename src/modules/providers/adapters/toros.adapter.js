@@ -235,14 +235,11 @@ class TorosfonAdapter extends BaseProviderAdapter {
         const endpoint = '/api/CheckOrder';
         const params = { order_id: orderId };
 
-        console.log(`[Toros] checkOrder → GET ${this.provider.baseUrl}${endpoint}`, {
-            params,
-            headers: { 'api-token': '***' },
-        });
+
 
         const { data } = await this._client.get(endpoint, { params });
 
-        console.log(`[Toros] checkOrder ← raw response:`, JSON.stringify(data));
+
 
         // ── Normalise nested response ────────────────────────────────────
         const nested = data.data ?? {};

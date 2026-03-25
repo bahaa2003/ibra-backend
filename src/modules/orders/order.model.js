@@ -26,6 +26,17 @@ const orderSchema = new mongoose.Schema(
             index: true,
         },
 
+        /**
+         * Sequential, human-readable order number.
+         * Auto-assigned via Counter collection at creation time.
+         * Starts at 10000 and increments by 1.
+         */
+        orderNumber: {
+            type: Number,
+            unique: true,
+            index: true,
+        },
+
         productId: {
             type: mongoose.Schema.Types.ObjectId,
             ref: 'Product',
@@ -201,7 +212,7 @@ const orderSchema = new mongoose.Schema(
          * Null until provider accepts the order.
          */
         providerOrderId: {
-            type: Number,
+            type: mongoose.Schema.Types.Mixed,  // Number (Royal Crown) OR String (Alkasr "ID_xxx")
             default: null,
             index: true,              // cron queries PROCESSING + providerOrderId != null
         },

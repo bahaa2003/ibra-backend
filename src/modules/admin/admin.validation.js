@@ -166,9 +166,23 @@ const walletAdjustmentSchema = Joi.object({
         'number.positive': 'Amount must be a positive number',
         'any.required': 'Amount is required',
     }),
-    reason: Joi.string().trim().min(3).max(255).required().messages({
-        'any.required': 'A reason is required for audit purposes',
+    reason: Joi.string().trim().min(3).max(255).optional().messages({
         'string.min': 'Reason must be at least 3 characters',
+    }),
+    description: Joi.string().trim().min(3).max(255).optional().messages({
+        'string.min': 'Description must be at least 3 characters',
+    }),
+}).or('reason', 'description');
+
+const walletSetBalanceSchema = Joi.object({
+    targetBalance: Joi.number().required().messages({
+        'any.required': 'Target balance is required',
+    }),
+    reason: Joi.string().trim().min(3).max(255).optional().messages({
+        'string.min': 'Reason must be at least 3 characters',
+    }),
+    description: Joi.string().trim().min(3).max(255).optional().messages({
+        'string.min': 'Description must be at least 3 characters',
     }),
 });
 
@@ -273,6 +287,7 @@ module.exports = {
         listOrdersQuery,
         // Wallet
         walletAdjustment: walletAdjustmentSchema,
+        walletSetBalance: walletSetBalanceSchema,
         // Groups
         createGroup: createGroupSchema,
         updateGroup: updateGroupSchema,

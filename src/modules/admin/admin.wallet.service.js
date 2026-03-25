@@ -17,6 +17,16 @@ const { ADMIN_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.con
 
 const MAX_ADJUSTMENT = 100_000;  // guard against fat-finger typos
 
+/**
+ * Safe rounding via integer math — kills IEEE-754 dust like 5.684e-14.
+ * Number.toFixed(2) still leaks because it returns a string that Number()
+ * re-parses, preserving intermediate float imprecision.
+ */
+const safeRound = (value, decimals = 2) => {
+    const factor = Math.pow(10, decimals);
+    return Math.round(value * factor) / factor;
+};
+
 // ─── List wallets (summary of all users) ─────────────────────────────────────
 
 const listWallets = async ({ page = 1, limit = 20 } = {}) => {
@@ -78,7 +88,7 @@ const getTransactionHistory = async (userId, { page = 1, limit = 20 } = {}) => {
  * No MongoDB transactions — uses atomic findOneAndUpdate + sequential create.
  */
 const addFunds = async (userId, amount, reason, adminId) => {
-    const parsedAmount = Number(parseFloat(amount).toFixed(2));
+    const parsedAmount = safeRound(Number(amount));
 
     if (parsedAmount <= 0 || parsedAmount > MAX_ADJUSTMENT) {
         throw new BusinessRuleError(
@@ -87,24 +97,39 @@ const addFunds = async (userId, amount, reason, adminId) => {
         );
     }
 
-    // Atomic increment — captures the pre-update document
-    const oldUser = await User.findOneAndUpdate(
-        { _id: userId },
-        [{ $set: { walletBalance: { $add: ['$walletBalance', parsedAmount] } } }],
-        { new: false }
-    );
+    // Fetch user first to compute credit repayment
+    const user = await User.findById(userId);
+    if (!user) throw new NotFoundError('User');
 
-    if (!oldUser) throw new NotFoundError('User');
+    const userCurrency = user.currency || 'USD';
+    const balanceBefore = safeRound(user.walletBalance || 0);
+    const creditUsedBefore = safeRound(user.creditUsed || 0);
 
-    const userCurrency = oldUser.currency || 'USD';
+    // If user has drawn credit (creditUsed > 0), adding funds repays credit first.
+    // Example: balance=-50, creditUsed=50, add 80 → creditUsed=0, balance=30
+    let creditRepaid = 0;
+    if (creditUsedBefore > 0 && balanceBefore < 0) {
+        creditRepaid = safeRound(Math.min(parsedAmount, creditUsedBefore));
+    }
+
+    const balanceAfter = safeRound(balanceBefore + parsedAmount);
+    const creditUsedAfter = safeRound(creditUsedBefore - creditRepaid);
+
+    // Atomic update
+    await User.findByIdAndUpdate(userId, {
+        $set: {
+            walletBalance: balanceAfter,
+            creditUsed: creditUsedAfter,
+        },
+    });
 
     // Create the wallet transaction record
     const transaction = await WalletTransaction.create({
         userId,
         type: TRANSACTION_TYPES.CREDIT,
         amount: parsedAmount,
-        balanceBefore: oldUser.walletBalance,
-        balanceAfter: Number((oldUser.walletBalance + parsedAmount).toFixed(2)),
+        balanceBefore,
+        balanceAfter,
         reference: null,
         status: 'COMPLETED',
         description: reason || `Admin manual credit (${userCurrency})`,
@@ -117,24 +142,35 @@ const addFunds = async (userId, amount, reason, adminId) => {
         action: ADMIN_ACTIONS.WALLET_ADJUSTED,
         entityType: ENTITY_TYPES.WALLET,
         entityId: userId,
-        metadata: { type: 'ADD', amount: parsedAmount, currency: userCurrency, reason, userId, transactionId: transaction._id },
+        metadata: {
+            type: 'ADD',
+            amount: parsedAmount,
+            currency: userCurrency,
+            reason,
+            userId,
+            balanceBefore,
+            balanceAfter,
+            creditRepaid,
+            transactionId: transaction._id,
+        },
     });
 
     return { transaction };
 };
 
-// ─── Manual Deduct ────────────────────────────────────────────────────────────
-
 /**
- * Admin: deduct funds from a user's wallet balance (no order required).
+ * Admin: deduct funds from a user's wallet balance.
  *
  * IMPORTANT: The `amount` parameter is always in the USER'S LOCAL CURRENCY
  * (the same currency as their walletBalance). No USD conversion is applied.
  *
- * No MongoDB transactions — uses atomic findOneAndUpdate + sequential create.
+ * CREDIT LIMIT ENFORCEMENT:
+ *   available = walletBalance + (creditLimit - creditUsed)
+ *   Deduction allowed only if: amount <= available
+ *   newBalance = walletBalance - amount (can go negative up to -creditLimit)
  */
 const deductFunds = async (userId, amount, reason, adminId) => {
-    const parsedAmount = Number(parseFloat(amount).toFixed(2));
+    const parsedAmount = safeRound(Number(amount));
 
     if (parsedAmount <= 0 || parsedAmount > MAX_ADJUSTMENT) {
         throw new BusinessRuleError(
@@ -143,28 +179,51 @@ const deductFunds = async (userId, amount, reason, adminId) => {
         );
     }
 
-    // Atomic: only deduct if sufficient balance
-    const oldUser = await User.findOneAndUpdate(
-        { _id: userId, walletBalance: { $gte: parsedAmount } },
-        [{ $set: { walletBalance: { $subtract: ['$walletBalance', parsedAmount] } } }],
-        { new: false }
-    );
+    // Fetch user to check credit limit
+    const user = await User.findById(userId);
+    if (!user) throw new NotFoundError('User');
 
-    if (!oldUser) {
-        const check = await User.findById(userId);
-        if (!check) throw new NotFoundError('User');
-        throw new BusinessRuleError('Insufficient wallet balance for this deduction.', 'INSUFFICIENT_BALANCE');
+    const userCurrency = user.currency || 'USD';
+    const balanceBefore = safeRound(user.walletBalance || 0);
+    const creditLimit = safeRound(Math.abs(Number(user.creditLimit || 0)));
+    const creditUsedBefore = safeRound(user.creditUsed || 0);
+    const availableCredit = safeRound(creditLimit - creditUsedBefore);
+    const totalAvailable = safeRound(balanceBefore + availableCredit);
+
+    if (parsedAmount > totalAvailable) {
+        throw new BusinessRuleError(
+            `Insufficient funds. Available: ${totalAvailable.toFixed(2)} ${userCurrency} ` +
+            `(balance: ${balanceBefore.toFixed(2)}, available credit: ${availableCredit.toFixed(2)}).`,
+            'INSUFFICIENT_BALANCE'
+        );
     }
 
-    const userCurrency = oldUser.currency || 'USD';
+    // Calculate new balance and credit usage
+    const balanceAfter = safeRound(balanceBefore - parsedAmount);
+
+    // If balance goes negative, the deficit is drawn from credit
+    let creditDrawn = 0;
+    if (balanceAfter < 0) {
+        // How much of the credit line is now being used
+        creditDrawn = safeRound(Math.min(Math.abs(balanceAfter), availableCredit));
+    }
+    const creditUsedAfter = safeRound(creditUsedBefore + creditDrawn);
+
+    // Atomic update
+    await User.findByIdAndUpdate(userId, {
+        $set: {
+            walletBalance: balanceAfter,
+            creditUsed: creditUsedAfter,
+        },
+    });
 
     // Create the wallet transaction record
     const transaction = await WalletTransaction.create({
         userId,
         type: TRANSACTION_TYPES.DEBIT,
         amount: parsedAmount,
-        balanceBefore: oldUser.walletBalance,
-        balanceAfter: Number((oldUser.walletBalance - parsedAmount).toFixed(2)),
+        balanceBefore,
+        balanceAfter,
         reference: null,
         status: 'COMPLETED',
         description: reason || `Admin manual debit (${userCurrency})`,
@@ -177,10 +236,106 @@ const deductFunds = async (userId, amount, reason, adminId) => {
         action: ADMIN_ACTIONS.WALLET_ADJUSTED,
         entityType: ENTITY_TYPES.WALLET,
         entityId: userId,
-        metadata: { type: 'DEDUCT', amount: parsedAmount, currency: userCurrency, reason, userId, transactionId: transaction._id },
+        metadata: {
+            type: 'DEDUCT',
+            amount: parsedAmount,
+            currency: userCurrency,
+            reason,
+            userId,
+            balanceBefore,
+            balanceAfter,
+            creditDrawn,
+            creditUsedBefore,
+            creditUsedAfter,
+            transactionId: transaction._id,
+        },
     });
 
     return { transaction };
+};
+
+// ─── Admin Force Set Balance ──────────────────────────────────────────────────
+
+/**
+ * Admin: forcefully set a user's wallet balance to an exact value.
+ *
+ * This bypasses credit limit checks — it is an admin override.
+ * The amount parameter IS the desired new balance (can be negative).
+ * Credit usage is recalculated based on the new balance.
+ */
+const setBalance = async (userId, targetBalance, reason, adminId) => {
+    const newBalance = safeRound(Number(targetBalance));
+
+    if (!Number.isFinite(newBalance)) {
+        throw new BusinessRuleError('Target balance must be a valid number.', 'INVALID_AMOUNT');
+    }
+
+    if (Math.abs(newBalance) > MAX_ADJUSTMENT * 10) {
+        throw new BusinessRuleError(
+            `Target balance magnitude exceeds maximum (${MAX_ADJUSTMENT * 10}).`,
+            'INVALID_ADJUSTMENT_AMOUNT'
+        );
+    }
+
+    const user = await User.findById(userId);
+    if (!user) throw new NotFoundError('User');
+
+    const userCurrency = user.currency || 'USD';
+    const balanceBefore = safeRound(user.walletBalance || 0);
+    const creditLimit = safeRound(Math.abs(Number(user.creditLimit || 0)));
+
+    // Recalculate credit usage based on the new balance
+    // If newBalance < 0, creditUsed = min(|newBalance|, creditLimit)
+    const creditUsedAfter = newBalance < 0
+        ? safeRound(Math.min(Math.abs(newBalance), creditLimit))
+        : 0;
+
+    // Atomic update
+    await User.findByIdAndUpdate(userId, {
+        $set: {
+            walletBalance: newBalance,
+            creditUsed: creditUsedAfter,
+        },
+    });
+
+    // Determine transaction type based on direction
+    const delta = safeRound(newBalance - balanceBefore);
+    const txType = delta >= 0 ? TRANSACTION_TYPES.CREDIT : TRANSACTION_TYPES.DEBIT;
+
+    // Create the wallet transaction record
+    const transaction = await WalletTransaction.create({
+        userId,
+        type: txType,
+        amount: safeRound(Math.abs(delta)),
+        balanceBefore,
+        balanceAfter: newBalance,
+        reference: null,
+        status: 'COMPLETED',
+        description: reason || `Admin set balance to ${newBalance} (${userCurrency})`,
+    });
+
+    // Audit (fire-and-forget)
+    createAuditLog({
+        actorId: adminId,
+        actorRole: ACTOR_ROLES.ADMIN,
+        action: ADMIN_ACTIONS.WALLET_ADJUSTED,
+        entityType: ENTITY_TYPES.WALLET,
+        entityId: userId,
+        metadata: {
+            type: 'SET',
+            targetBalance: newBalance,
+            delta,
+            currency: userCurrency,
+            reason,
+            userId,
+            balanceBefore,
+            balanceAfter: newBalance,
+            creditUsedAfter,
+            transactionId: transaction._id,
+        },
+    });
+
+    return { transaction, user: { walletBalance: newBalance, creditUsed: creditUsedAfter } };
 };
 
 module.exports = {
@@ -189,4 +344,5 @@ module.exports = {
     getTransactionHistory,
     addFunds,
     deductFunds,
+    setBalance,
 };

@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const { Product } = require('../products/product.model');
 const { Provider } = require('../providers/provider.model');
 const { Order, ORDER_STATUS, ORDER_EXECUTION_TYPES } = require('./order.model');
+const { getNextSequence } = require('./counter.model');
 const { debitWalletAtomic, refundWalletAtomic } = require('../wallet/wallet.service');
 const { calculateUserPrice } = require('./pricing.service');
 const { getProviderAdapter } = require('../providers/adapters/adapter.factory');
@@ -113,6 +114,13 @@ const _attemptCreateOrder = async (
 
     const session = await mongoose.startSession();
 
+    // ── 0. Assign sequential order number (OUTSIDE txn) ──────────────────
+    // Auto-increment counters are intentionally non-transactional (same as
+    // PostgreSQL sequences / MySQL AUTO_INCREMENT). A wasted number on
+    // abort is acceptable. Running inside snapshot-isolation would fail
+    // because the session can't see counter docs created after its snapshot.
+    const orderNumber = await getNextSequence('orderNumber', 9999);
+
     try {
         session.startTransaction({
             readConcern: { level: 'snapshot' },
@@ -206,6 +214,7 @@ const _attemptCreateOrder = async (
         const orderData = {
             userId,
             productId: product._id,
+            orderNumber,
             quantity: qty,
             basePriceSnapshot: pricing.basePrice,
             markupPercentageSnapshot: pricing.markupPercentage,
@@ -241,12 +250,12 @@ const _attemptCreateOrder = async (
             throw createErr;
         }
 
-        // ── 7. Commit ──────────────────────────────────────────────────────────
+        // ── 8. Commit ──────────────────────────────────────────────────────────
         await session.commitTransaction();
 
         await order.populate([{ path: 'productId', select: 'name basePrice executionType providerProduct' }]);
 
-        // ── 8. Audit: AFTER commit — fire-and-forget ───────────────────────────
+        // ── 9. Audit: AFTER commit — fire-and-forget ───────────────────────────
         const actorId = auditContext?.actorId ?? userId;
         const actorRole = auditContext?.actorRole ?? ACTOR_ROLES.CUSTOMER;
         const ipAddress = auditContext?.ipAddress ?? null;
@@ -290,7 +299,7 @@ const _attemptCreateOrder = async (
             },
         });
 
-        // ── 9. Trigger provider fulfillment (fire-and-forget) ──────────────────
+        // ── 10. Trigger provider fulfillment (fire-and-forget) ──────────────────
         // Always fires for AUTOMATIC products. executeOrder self-resolves the
         // provider adapter if none was pre-resolved, and handles all failures
         // (marks FAILED + refunds the wallet).

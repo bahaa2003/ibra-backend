@@ -4,6 +4,47 @@ const productService = require('./product.service');
 const { sendSuccess, sendCreated, sendPaginated } = require('../../shared/utils/apiResponse');
 const catchAsync = require('../../shared/utils/catchAsync');
 
+// ─── Sensitive fields that must NEVER reach non-admin clients ─────────────────
+
+const SENSITIVE_FIELDS = [
+    'providerPrice',
+    'markupType',
+    'markupValue',
+    'pricingMode',
+    'provider',
+    'providerProduct',
+    'providerMapping',
+    'syncPriceWithProvider',
+    'enableManualPrice',
+    'manualPriceAdjustment',
+    'executionType',
+    'createdBy',
+    'deletedAt',
+    'internalNotes',
+    'syncedProviderBasePrice',
+    'supplierId',
+    'providerId',
+    'externalProductId',
+    'externalProductName',
+    '__v',
+];
+
+/**
+ * Strip sensitive business fields from a product before sending to customers.
+ * Works on both Mongoose documents and plain objects.
+ */
+const sanitizeProductForCustomer = (product) => {
+    if (!product) return product;
+    const obj = typeof product.toObject === 'function' ? product.toObject() : { ...product };
+    for (const field of SENSITIVE_FIELDS) {
+        delete obj[field];
+    }
+    return obj;
+};
+
+const sanitizeProductsForCustomer = (products) =>
+    (Array.isArray(products) ? products : []).map(sanitizeProductForCustomer);
+
 // ─── User-facing ──────────────────────────────────────────────────────────────
 
 /**
@@ -11,7 +52,8 @@ const catchAsync = require('../../shared/utils/catchAsync');
  * Customers see only active products; admins see everything.
  */
 const listProducts = catchAsync(async (req, res) => {
-    const activeOnly = req.user.role !== 'ADMIN';
+    const isAdmin = req.user?.role === 'ADMIN';
+    const activeOnly = !isAdmin;
     const page = parseInt(req.query.page, 10) || 1;
     const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
 
@@ -31,7 +73,8 @@ const listProducts = catchAsync(async (req, res) => {
         }
     }
 
-    sendPaginated(res, products, pagination, 'Products retrieved successfully.');
+    const responseProducts = isAdmin ? products : sanitizeProductsForCustomer(products);
+    sendPaginated(res, responseProducts, pagination, 'Products retrieved successfully.');
 });
 
 /**
@@ -39,7 +82,9 @@ const listProducts = catchAsync(async (req, res) => {
  */
 const getProduct = catchAsync(async (req, res) => {
     const product = await productService.getProductById(req.params.id);
-    sendSuccess(res, product);
+    const isAdmin = req.user?.role === 'ADMIN';
+    const responseProduct = isAdmin ? product : sanitizeProductForCustomer(product);
+    sendSuccess(res, responseProduct);
 });
 
 // ─── Admin only ───────────────────────────────────────────────────────────────

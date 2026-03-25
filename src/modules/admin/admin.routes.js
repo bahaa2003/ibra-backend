@@ -77,6 +77,7 @@ const authorize = require('../../shared/middlewares/authorize');
 const catchAsync = require('../../shared/utils/catchAsync');
 const { sendSuccess, sendPaginated } = require('../../shared/utils/apiResponse');
 const { createUpload } = require('../../shared/middlewares/upload');
+const { walletLimiter } = require('../../shared/middlewares/rateLimiter');
 
 const { validateBody, validateQuery, schemas } = require('./admin.validation');
 
@@ -115,12 +116,14 @@ router.get('/stats', statsCtrl.getDashboardStats);
 // ═══════════════════════════════════════════════════════════════════════════════
 
 router.get('/users', validateQuery(schemas.listUsersQuery), usersCtrl.listUsers);
+router.get('/users/deleted', usersCtrl.listDeletedUsers); // MUST be before /:id
 router.get('/users/:id', usersCtrl.getUserById);
 router.patch('/users/:id', validateBody(schemas.updateUser), usersCtrl.updateUser);
 router.delete('/users/:id', usersCtrl.deleteUser);
-// approve / reject — specific actions must come BEFORE /:id pattern
+// approve / reject / restore — specific actions must come BEFORE /:id pattern
 router.patch('/users/:id/approve', usersCtrl.approveUser);
 router.patch('/users/:id/reject', usersCtrl.rejectUser);
+router.patch('/users/:id/restore', usersCtrl.restoreUser);
 // Phase 4 gap-bridged routes
 router.patch('/users/:id/role', validateBody(schemas.updateUserRole), usersCtrl.updateUserRole);
 router.patch('/users/:id/currency', validateBody(schemas.updateUserCurrency), usersCtrl.updateUserCurrency);
@@ -162,8 +165,9 @@ router.get('/orders/:id', ordersCtrl.getOrderById);
 
 router.get('/wallets', walletCtrl.listWallets);
 router.get('/wallets/:userId/transactions', walletCtrl.getTransactionHistory);
-router.post('/wallets/:userId/add', validateBody(schemas.walletAdjustment), walletCtrl.addFunds);
-router.post('/wallets/:userId/deduct', validateBody(schemas.walletAdjustment), walletCtrl.deductFunds);
+router.post('/wallets/:userId/add', walletLimiter, validateBody(schemas.walletAdjustment), walletCtrl.addFunds);
+router.post('/wallets/:userId/deduct', walletLimiter, validateBody(schemas.walletAdjustment), walletCtrl.deductFunds);
+router.put('/wallets/:userId/set', walletLimiter, validateBody(schemas.walletSetBalance), walletCtrl.setBalance);
 router.get('/wallets/:userId', walletCtrl.getWallet);
 
 // ═══════════════════════════════════════════════════════════════════════════════

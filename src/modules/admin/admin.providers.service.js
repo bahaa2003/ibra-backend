@@ -250,12 +250,7 @@ const checkProviderOrder = async (id, orderId) => {
     const adapter = getProviderAdapter(provider);
 
     try {
-        console.log(`[checkProviderOrder] Checking order ${orderId} via provider "${provider.name}" (${provider.slug})`);
         const result = await adapter.checkOrder(orderId);
-        console.log(`[checkProviderOrder] Result for order ${orderId}:`, {
-            providerStatus: result.providerStatus,
-            unifiedStatus: result.unifiedStatus,
-        });
 
         return {
             provider: provider.name,
@@ -267,10 +262,7 @@ const checkProviderOrder = async (id, orderId) => {
         const httpStatus = err.statusCode ?? err.response?.status;
         const errMsg = err.message || 'Unknown error';
 
-        console.error(`[checkProviderOrder] FAILED for order ${orderId} via "${provider.name}":`, {
-            httpStatus,
-            message: errMsg,
-        });
+
 
         // Determine if this is a DLQ-worthy error (needs manual review)
         const isTimeout = err.code === 'ECONNABORTED' || /timeout/i.test(errMsg);
