@@ -1,8 +1,9 @@
 'use strict';
 
 const mongoose = require('mongoose');
-const { Product } = require('../products/product.model');
+const { Product, computeFinalPrice } = require('../products/product.model');
 const { Provider } = require('../providers/provider.model');
+const { ProviderProduct } = require('../providers/providerProduct.model');
 const { Order, ORDER_STATUS, ORDER_EXECUTION_TYPES } = require('./order.model');
 const { getNextSequence } = require('./counter.model');
 const { debitWalletAtomic, refundWalletAtomic } = require('../wallet/wallet.service');
@@ -23,6 +24,50 @@ const {
 } = require('../audit/audit.constants');
 const { convertUsdToUserCurrency } = require('../../services/currencyConverter.service');
 const { User } = require('../users/user.model');
+const { getLivePrice, invalidate: invalidatePriceCache } = require('../providers/providerPriceCache');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JIT PRICE AUTO-UPDATE HELPER
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Fire-and-forget: update the product's providerPrice, basePrice, and
+ * finalPrice when a JIT check detects the provider has raised the price.
+ *
+ * Uses the same formula as the sync engine (providerProductSync.service.js)
+ * so prices remain consistent.
+ *
+ * Runs OUTSIDE any transaction — it is OK if this fails; the next sync
+ * cycle will correct it anyway. The important thing is that the ORDER
+ * was already aborted.
+ *
+ * @param {ObjectId}           productId
+ * @param {number}             newProviderPrice   - live rawPrice from provider
+ * @param {'percentage'|'fixed'} markupType
+ * @param {number}             markupValue
+ * @private
+ */
+const _autoUpdateProductPrice = (productId, newProviderPrice, markupType, markupValue) => {
+    // Intentionally NOT awaited — fire-and-forget
+    (async () => {
+        try {
+            const safeProviderPrice = parseFloat(newProviderPrice.toFixed(6));
+            const newFinalPrice = computeFinalPrice(safeProviderPrice, markupType, markupValue);
+            const newBasePrice = newFinalPrice ?? safeProviderPrice;
+
+            await Product.findByIdAndUpdate(productId, {
+                $set: {
+                    providerPrice: safeProviderPrice,
+                    finalPrice: newFinalPrice,
+                    basePrice: newBasePrice,
+                },
+            });
+        } catch (err) {
+            // Swallow — the sync engine will correct this on its next run.
+            // A failed auto-update must never crash the process.
+        }
+    })();
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CREATE ORDER
@@ -161,6 +206,58 @@ const _attemptCreateOrder = async (
             // No formal schema — save raw values so the fulfillment engine
             // can forward them to the provider (e.g. { link: '...' }).
             customerInput = { values: orderFieldsValues, fieldsSnapshot: [] };
+        }
+
+        // ── 2c. JIT Provider Price Verification ────────────────────────────────
+        //
+        // If this product is linked to a provider, verify the provider's live
+        // price hasn't increased since the last catalog sync.  This prevents
+        // selling at a loss when a provider raises prices between sync cycles.
+        //
+        // Performance: uses an in-memory cache (5-min TTL) so the full catalog
+        // is fetched at most once per provider per TTL window.
+        //
+        // Fault-tolerant: if the provider API is unreachable, the order
+        // proceeds with the cached DB price.  A transient outage should NOT
+        // block legitimate orders.
+        //
+        if (product.provider && product.providerProduct && resolvedProvider) {
+            try {
+                // Look up the externalProductId from the linked ProviderProduct
+                const ppDoc = await ProviderProduct.findById(product.providerProduct)
+                    .select('externalProductId')
+                    .lean();
+
+                if (ppDoc?.externalProductId) {
+                    const livePrice = await getLivePrice(
+                        String(product.provider),
+                        ppDoc.externalProductId,
+                        resolvedProvider
+                    );
+
+                    if (livePrice !== null && product.providerPrice != null) {
+                        const storedPrice = Number(product.providerPrice);
+
+                        if (livePrice > storedPrice) {
+                            // ── Price increased — abort order, auto-update DB ──
+                            _autoUpdateProductPrice(product._id, livePrice, product.markupType, product.markupValue);
+                            invalidatePriceCache(String(product.provider));
+
+                            throw new BusinessRuleError(
+                                'The provider has increased the price for this service. ' +
+                                'The catalog has been automatically updated. ' +
+                                'Please refresh and review the new price before ordering.',
+                                'PROVIDER_PRICE_INCREASED'
+                            );
+                        }
+                    }
+                }
+            } catch (jitErr) {
+                // Re-throw our own BusinessRuleError (price increase abort)
+                if (jitErr.code === 'PROVIDER_PRICE_INCREASED') throw jitErr;
+                // Swallow all other errors (API timeout, network failure, etc.)
+                // — proceed with the cached DB price rather than blocking the order.
+            }
         }
 
         // ── 3. Pricing Engine (USD) ────────────────────────────────────────────

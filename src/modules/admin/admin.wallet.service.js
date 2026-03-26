@@ -35,7 +35,7 @@ const listWallets = async ({ page = 1, limit = 20 } = {}) => {
 
     const [users, total] = await Promise.all([
         User.find({ deletedAt: null })
-            .select('name email walletBalance creditLimit creditUsed role status')
+            .select('name email walletBalance creditLimit creditUsed currency role status')
             .sort({ walletBalance: -1 })
             .skip(skip)
             .limit(limit),

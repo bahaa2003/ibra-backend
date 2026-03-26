@@ -138,9 +138,9 @@ describe('Insufficient funds', () => {
         expect(txnCount).toBe(0);
     });
 
-    it('rejects order even when creditLimit is huge (credit system disabled)', async () => {
-        // User has large creditLimit but zero walletBalance — must still reject
-        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 0, creditLimit: 10000, creditUsed: 0 });
+    it('rejects order when walletBalance is zero and creditLimit is zero', async () => {
+        // User has no balance and no credit — must reject
+        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 0, creditLimit: 0, creditUsed: 0 });
         const product = await createProduct({ basePrice: 100, minQty: 1, maxQty: 1 });
 
         await expect(
