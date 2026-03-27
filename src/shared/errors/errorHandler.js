@@ -89,7 +89,7 @@ const globalErrorHandler = (err, req, res, next) => {
     // Transform known Mongoose / JWT errors into AppErrors
     if (err.name === 'CastError') error = handleCastError(err);
     if (err.code === 11000) error = handleDuplicateKeyError(err);
-    if (err.name === 'ValidationError') error = handleValidationError(err);
+    if (err.name === 'ValidationError' && !err.isOperational) error = handleValidationError(err);
     if (err.name === 'JsonWebTokenError') error = handleJWTError();
     if (err.name === 'TokenExpiredError') error = handleJWTExpiredError();
 

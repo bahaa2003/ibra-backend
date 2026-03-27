@@ -297,26 +297,51 @@ const getProduct = catchAsync(async (req, res) => {
  * The uploaded file path is stored as `transferImageUrl`.
  */
 const createDeposit = catchAsync(async (req, res) => {
-    const { amountRequested, transferredFromNumber } = req.body;
-
-    // req.file is set by multer upload.single('screenshotProof')
-    // Fallback to direct URL field for JSON-only clients
-    let transferImageUrl;
-    if (req.file) {
-        // Build a relative URL from the stored path
-        transferImageUrl = `/uploads/deposits/${req.file.filename}`;
-    } else if (req.body.transferImageUrl) {
-        transferImageUrl = req.body.transferImageUrl;
-    } else {
-        const { ValidationError } = require('../../shared/errors/AppError');
-        throw new ValidationError('screenshotProof file or transferImageUrl is required.');
+    // ── Validate file upload ─────────────────────────────────────────────
+    if (!req.file) {
+        const { BusinessRuleError } = require('../../shared/errors/AppError');
+        throw new BusinessRuleError(
+            'Receipt image is required. Please upload a file.',
+            'RECEIPT_REQUIRED'
+        );
     }
 
+    const { requestedAmount, currency, paymentMethodId, notes } = req.body;
+
+    // ── Fetch current exchange rate ──────────────────────────────────────
+    const { Currency } = require('../currency/currency.model');
+    const currencyDoc = await Currency.findOne({
+        code: currency.toUpperCase(),
+        isActive: true,
+    });
+
+    if (!currencyDoc) {
+        const { BusinessRuleError } = require('../../shared/errors/AppError');
+        throw new BusinessRuleError(
+            `Currency '${currency}' is not supported or is inactive.`,
+            'INVALID_CURRENCY'
+        );
+    }
+
+    const exchangeRate = currencyDoc.platformRate;
+
+    // ── Calculate USD equivalent ─────────────────────────────────────────
+    const parsedAmount = parseFloat(requestedAmount);
+    const amountUsd = Number((parsedAmount / exchangeRate).toFixed(2));
+
+    // ── Build relative receipt path ──────────────────────────────────────
+    const receiptImage = `uploads/deposits/${req.file.filename}`;
+
+    // ── Persist ──────────────────────────────────────────────────────────
     const deposit = await depositService.createDepositRequest({
         userId: req.user._id,
-        amountRequested: parseFloat(amountRequested),
-        transferImageUrl,
-        transferredFromNumber,
+        paymentMethodId,
+        requestedAmount: parsedAmount,
+        currency: currency.toUpperCase(),
+        exchangeRate,
+        amountUsd,
+        receiptImage,
+        notes: notes || null,
         auditContext: {
             actorId: req.user._id,
             actorRole: 'CUSTOMER',

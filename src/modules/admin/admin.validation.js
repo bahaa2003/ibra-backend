@@ -263,6 +263,8 @@ const updateSettingSchema = Joi.object({
 // ─── Deposit admin schema ─────────────────────────────────────────────────────
 
 const approveDepositSchema = Joi.object({
+    amount: Joi.number().positive().max(1_000_000).optional(),
+    currency: Joi.string().trim().uppercase().pattern(/^[A-Z]{3}$/).optional(),
     adminNotes: Joi.string().trim().max(500).optional().allow('', null),
 });
 

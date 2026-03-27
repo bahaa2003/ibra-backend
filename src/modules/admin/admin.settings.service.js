@@ -40,12 +40,16 @@ const updateSetting = async (key, value, adminId) => {
     const before = setting ? setting.value : undefined;
 
     if (setting) {
+        // ── CRITICAL: Schema.Types.Mixed fix ─────────────────────────
+        // Mongoose does not detect mutations to Mixed-type fields.
+        // Without markModified(), `.save()` silently skips the write
+        // even though it returns the document — a "200 OK but nothing saved" bug.
         setting.value = value;
         setting.updatedBy = adminId;
+        setting.markModified('value');
         await setting.save();
     } else {
         // Key does not exist yet — auto-create it (upsert behaviour).
-        // This handles cases where the database predates newly-added seed keys.
         setting = await Setting.create({
             key,
             value,

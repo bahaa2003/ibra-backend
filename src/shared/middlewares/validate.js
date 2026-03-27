@@ -15,6 +15,7 @@ const validate = (req, res, next) => {
             message: err.msg,
             value: err.value,
         }));
+        console.log('[VALIDATION_FAILED]', req.method, req.originalUrl, JSON.stringify(formatted, null, 2));
         throw new ValidationError('Request validation failed', formatted);
     }
     next();

@@ -29,9 +29,11 @@ const { Router } = require('express');
 const me = require('./me.controller');
 const authenticate = require('../../shared/middlewares/authenticate');
 const requireActiveUser = require('../../shared/middlewares/requireActiveUser');
-const upload = require('../../shared/middlewares/upload');
+const { createUpload } = require('../../shared/middlewares/upload');
 const { body, param, query } = require('express-validator');
 const validate = require('../../shared/middlewares/validate');
+
+const depositUpload = createUpload('deposits');
 
 const router = Router();
 
@@ -95,25 +97,32 @@ router.get(
 // ─── Deposits ─────────────────────────────────────────────────────────────────
 
 const createDepositValidation = [
-    body('amountRequested')
-        .notEmpty().withMessage('amountRequested is required')
-        .isFloat({ gt: 0 }).withMessage('amountRequested must be a positive number'),
-    body('transferredFromNumber')
-        .notEmpty().withMessage('transferredFromNumber is required')
+    body('requestedAmount')
+        .notEmpty().withMessage('requestedAmount is required')
+        .isFloat({ gt: 0 }).withMessage('requestedAmount must be a positive number'),
+    body('currency')
+        .notEmpty().withMessage('currency is required')
         .isString().trim()
-        .isLength({ min: 1, max: 100 }),
+        .isLength({ min: 3, max: 3 }).withMessage('currency must be a 3-letter ISO 4217 code')
+        .toUpperCase(),
+    body('paymentMethodId')
+        .notEmpty().withMessage('paymentMethodId is required')
+        .isString().trim(),
+    body('notes')
+        .optional()
+        .isString().trim()
+        .isLength({ max: 500 }).withMessage('notes cannot exceed 500 characters'),
 ];
 
 /**
  * @route  POST /api/me/deposits
- * @desc   Submit a deposit request with optional screenshot upload
+ * @desc   Submit a deposit request with receipt upload (multi-currency)
  * @access Active user
- * @body   multipart/form-data: amountRequested, transferredFromNumber, screenshotProof (file)
- *         OR application/json: amountRequested, transferredFromNumber, transferImageUrl
+ * @body   multipart/form-data: requestedAmount, currency, paymentMethodId, receipt (file), notes?
  */
 router.post(
     '/deposits',
-    upload.single('screenshotProof'),
+    depositUpload.single('receipt'),
     createDepositValidation,
     validate,
     me.createDeposit

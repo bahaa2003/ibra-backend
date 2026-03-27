@@ -273,9 +273,15 @@ router.patch('/settings/:key', validateBody(schemas.updateSetting), settingsCtrl
 router.get('/deposits', catchAsync(async (req, res) => {
     const page = parseInt(req.query.page ?? 1, 10);
     const limit = Math.min(parseInt(req.query.limit ?? 20, 10), 100);
-    const { status } = req.query;
-    const result = await depositSvc.listDeposits({ page, limit, status });
-    sendPaginated(res, result.deposits, result.pagination, 'Deposit requests retrieved');
+    const { status, search } = req.query;
+    const result = await depositSvc.listDeposits({ page, limit, status, search });
+    res.status(200).json({
+        success: true,
+        message: 'Deposit requests retrieved',
+        data: result.deposits,
+        pagination: result.pagination,
+        summary: result.summary,
+    });
 }));
 
 router.get('/deposits/:id', catchAsync(async (req, res) => {
@@ -287,6 +293,12 @@ router.patch('/deposits/:id/approve', validateBody(schemas.approveDeposit), catc
     const deposit = await depositSvc.approveDeposit(
         req.params.id,
         req.user._id,
+        {
+            // Admin overrides (optional — fallback to original deposit values in service)
+            amount: req.body.amount,
+            currency: req.body.currency,
+            adminNotes: req.body.adminNotes,
+        },
         { actorId: req.user._id, actorRole: 'ADMIN', ipAddress: req.ip, userAgent: req.get('User-Agent') }
     );
     sendSuccess(res, deposit, 'Deposit approved and wallet credited.');
