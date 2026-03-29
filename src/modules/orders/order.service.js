@@ -221,7 +221,7 @@ const _attemptCreateOrder = async (
         // proceeds with the cached DB price.  A transient outage should NOT
         // block legitimate orders.
         //
-        if (product.provider && product.providerProduct && resolvedProvider) {
+        if (product.provider && product.providerProduct && provider) {
             try {
                 // Look up the externalProductId from the linked ProviderProduct
                 const ppDoc = await ProviderProduct.findById(product.providerProduct)
@@ -232,7 +232,7 @@ const _attemptCreateOrder = async (
                     const livePrice = await getLivePrice(
                         String(product.provider),
                         ppDoc.externalProductId,
-                        resolvedProvider
+                        provider
                     );
 
                     if (livePrice !== null && product.providerPrice != null) {
