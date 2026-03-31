@@ -13,7 +13,7 @@
  * {
  *   externalProductId : string   (required — stable identifier from provider)
  *   rawName           : string   (required)
- *   rawPrice          : number   (required, >= 0)
+ *   rawPrice          : string   (required, >= 0, arbitrary-precision)
  *   minQty            : number   (optional, default 1)
  *   maxQty            : number   (optional, default 9999)
  *   isActive          : boolean  (optional, default true)
@@ -160,13 +160,13 @@ class BaseProviderAdapter {
     _validateDTO(dto) {
         if (!dto.externalProductId) throw new Error('DTO missing externalProductId');
         if (!dto.rawName) throw new Error('DTO missing rawName');
-        if (typeof dto.rawPrice !== 'number' || dto.rawPrice < 0) {
+        if (dto.rawPrice == null || isNaN(Number(dto.rawPrice)) || Number(dto.rawPrice) < 0) {
             throw new Error(`DTO rawPrice must be a non-negative number, got: ${dto.rawPrice}`);
         }
         return {
             externalProductId: String(dto.externalProductId),
             rawName: String(dto.rawName),
-            rawPrice: parseFloat(dto.rawPrice.toFixed(4)),
+            rawPrice: String(dto.rawPrice),
             minQty: dto.minQty ?? 1,
             maxQty: dto.maxQty ?? 9999,
             isActive: dto.isActive ?? true,

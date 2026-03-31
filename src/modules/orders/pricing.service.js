@@ -1,19 +1,23 @@
 'use strict';
 
 /**
- * pricing.service.js — Pure Pricing Engine
- * ─────────────────────────────────────────
+ * pricing.service.js — Pure Pricing Engine (Arbitrary Precision)
+ * ──────────────────────────────────────────────────────────────
  * All functions here are pure where possible (no side effects, no DB).
  * calculateUserPrice is the only one that touches the DB.
  *
  * Single source of truth for markup math — used by order.service.js
  * at order creation time to produce the price snapshots burned into
  * each Order document.
+ *
+ * Prices are STRING throughout (up to 50 dp). Only chargedAmount is
+ * a 2 dp Number because wallet balances are standard fiat.
  */
 
 const { User } = require('../users/user.model');
 const Group = require('../groups/group.model');
 const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppError');
+const { toDecimal, toStr, isPositive, multiply, add } = require('../../shared/utils/decimalPrecision');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PURE CALCULATION
@@ -23,38 +27,34 @@ const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppErr
  * Calculate the final price after applying a group markup percentage.
  *
  * Rules:
- *  - basePrice must be >= 0
+ *  - basePrice must be >= 0 (string or number)
  *  - percentage must be >= 0
  *  - finalPrice = basePrice + (basePrice × percentage / 100)
- *  - Result is rounded to 2 decimal places (financial rounding via toFixed)
  *
- * This is intentionally a PURE function — no DB access, no side effects.
- * Safe to call in tests without any DB connection.
- *
- * @param {number} basePrice   - Raw product price (>= 0)
- * @param {number} percentage  - Group markup percentage (>= 0)
- * @returns {number} finalPrice with full precision (rounding deferred to final charge)
+ * @param {string|number} basePrice   - Raw product price (>= 0)
+ * @param {number}        percentage  - Group markup percentage (>= 0)
+ * @returns {string} finalPrice as an arbitrary-precision string
  * @throws {BusinessRuleError} if inputs are invalid
  */
 const calculateFinalPrice = (basePrice, percentage) => {
-    if (typeof basePrice !== 'number' || basePrice < 0) {
+    const base = toDecimal(basePrice);
+    if (base.isNegative()) {
         throw new BusinessRuleError(
             'basePrice must be a non-negative number.',
             'INVALID_BASE_PRICE'
         );
     }
-    if (typeof percentage !== 'number' || percentage < 0) {
+    const pct = Number(percentage);
+    if (!Number.isFinite(pct) || pct < 0) {
         throw new BusinessRuleError(
             'percentage must be a non-negative number.',
             'INVALID_PERCENTAGE'
         );
     }
 
-    const markup = basePrice * (percentage / 100);
-    // Retain full precision — do NOT round here. Rounding happens at the
-    // final chargedAmount step in order.service.js so micro-prices (e.g.
-    // $0.0002/unit × 10000 qty) are not prematurely zeroed out.
-    return basePrice + markup;
+    // basePrice + basePrice * (percentage / 100)
+    const markup = multiply(basePrice, String(pct / 100));
+    return add(basePrice, markup);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,17 +65,13 @@ const calculateFinalPrice = (basePrice, percentage) => {
  * Calculate the effective price for a specific user by looking up their
  * group's markup percentage, then applying calculateFinalPrice.
  *
- * This is called at order creation time. The result is immediately snapshotted
- * into the Order document — the group or percentage can change afterwards
- * with NO effect on existing orders.
- *
  * @param {string|ObjectId} userId    - The buying user's ID
- * @param {number}          basePrice - Product's base price
+ * @param {string|number}   basePrice - Product's base price
  * @param {Object}          [session] - Optional Mongoose session (for transactions)
  * @returns {Promise<{
- *   basePrice:        number,
+ *   basePrice:        string,
  *   markupPercentage: number,
- *   finalPrice:       number,
+ *   finalPrice:       string,
  *   groupId:          ObjectId
  * }>}
  */
@@ -103,18 +99,18 @@ const calculateUserPrice = async (userId, basePrice, session = null) => {
         );
     }
 
-    // Safe casting — prevent NaN if group.percentage is undefined or non-numeric
+    // percentage stays as Number — it's a simple integer (e.g. 20 = 20%)
     const markupPercentage = Number.isFinite(Number(group.percentage))
         ? Number(group.percentage)
         : 0;
 
-    // Safe casting — prevent NaN if basePrice is somehow non-numeric
-    const safeBasePrice = Number.isFinite(Number(basePrice)) ? Number(basePrice) : 0;
+    // basePrice is a string — ensure it's valid
+    const safeBasePrice = isPositive(basePrice) ? String(basePrice) : '0';
 
     const finalPrice = calculateFinalPrice(safeBasePrice, markupPercentage);
 
     return {
-        basePrice,
+        basePrice: safeBasePrice,
         markupPercentage,
         finalPrice,
         groupId: group._id,

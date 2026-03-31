@@ -2,6 +2,18 @@
 
 const { body, param, query } = require('express-validator');
 const { PRICING_MODES, MARKUP_TYPES, EXECUTION_TYPES } = require('./product.model');
+const { isPositive } = require('../../shared/utils/decimalPrecision');
+
+/**
+ * Custom validator: value must be a positive decimal (string or number).
+ * Accepts any decimal string with unlimited precision (e.g. 50 dp).
+ */
+const isPositiveDecimalString = (value) => {
+    if (value == null || value === '') return false;
+    const n = Number(value);
+    if (isNaN(n)) return false;
+    return isPositive(value);
+};
 
 // ─── User-facing / shared validation ─────────────────────────────────────────
 
@@ -28,7 +40,7 @@ const createProductValidation = [
 
     body('basePrice')
         .notEmpty().withMessage('basePrice is required')
-        .isFloat({ min: 0.01 }).withMessage('basePrice must be > 0'),
+        .custom((v) => isPositiveDecimalString(v)).withMessage('basePrice must be > 0'),
 
     body('minQty')
         .notEmpty().withMessage('minQty is required')
@@ -50,7 +62,7 @@ const createProductValidation = [
 
     body('image')
         .optional({ nullable: true })
-        .isURL().withMessage('image must be a valid URL'),
+        .isString().withMessage('image must be a string'),
 
     body('displayOrder')
         .optional()
@@ -97,7 +109,7 @@ const createProductValidation = [
 
     body('manualPriceAdjustment')
         .optional()
-        .isFloat().withMessage('manualPriceAdjustment must be a number'),
+        .custom((v) => v == null || !isNaN(Number(v))).withMessage('manualPriceAdjustment must be a valid decimal'),
 ];
 
 // ─── Admin: publish from provider product ────────────────────────────────────
@@ -118,7 +130,7 @@ const publishProductValidation = [
 
     body('basePrice')
         .optional({ nullable: true })
-        .isFloat({ min: 0.01 }).withMessage('basePrice must be > 0, if provided'),
+        .custom((v) => v == null || isPositiveDecimalString(v)).withMessage('basePrice must be > 0, if provided'),
 
     body('minQty')
         .optional()
@@ -134,7 +146,7 @@ const publishProductValidation = [
 
     body('image')
         .optional({ nullable: true })
-        .isURL().withMessage('image must be a valid URL'),
+        .isString().withMessage('image must be a string'),
 
     body('displayOrder')
         .optional()
@@ -180,7 +192,7 @@ const updateProductValidation = [
 
     body('basePrice')
         .optional()
-        .isFloat({ min: 0.01 }).withMessage('basePrice must be > 0'),
+        .custom((v) => v == null || isPositiveDecimalString(v)).withMessage('basePrice must be > 0'),
 
     body('minQty')
         .optional()
@@ -196,7 +208,7 @@ const updateProductValidation = [
 
     body('image')
         .optional({ nullable: true })
-        .isURL().withMessage('image must be a valid URL'),
+        .isString().withMessage('image must be a string'),
 
     body('displayOrder')
         .optional()
@@ -230,7 +242,7 @@ const updateProductValidation = [
 
     body('manualPriceAdjustment')
         .optional()
-        .isFloat().withMessage('manualPriceAdjustment must be a number'),
+        .custom((v) => v == null || !isNaN(Number(v))).withMessage('manualPriceAdjustment must be a valid decimal'),
 
     body('executionType')
         .optional()

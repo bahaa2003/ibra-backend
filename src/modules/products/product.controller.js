@@ -66,9 +66,10 @@ const listProducts = catchAsync(async (req, res) => {
         const markup = Number(group?.percentage || 0);
 
         if (markup > 0) {
+            const { computeMarkup } = require('../../shared/utils/decimalPrecision');
             for (const product of products) {
-                const base = Number(product.finalPrice || product.basePrice || 0);
-                product.finalPrice = parseFloat((base + base * (markup / 100)).toFixed(6));
+                const base = String(product.finalPrice || product.basePrice || '0');
+                product.finalPrice = computeMarkup(base, 'percentage', markup);
             }
         }
     }

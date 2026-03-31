@@ -38,7 +38,7 @@
 const axios = require('axios');
 const { BaseProviderAdapter } = require('./base.adapter');
 
-const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_TIMEOUT_MS = 60_000;
 
 // ─── HTTP client factory ──────────────────────────────────────────────────────
 
@@ -113,7 +113,7 @@ class TorosfonAdapter extends BaseProviderAdapter {
         return list.map((item) => this._validateDTO({
             externalProductId: String(item.id ?? item.product_id ?? item.service ?? item.code),
             rawName: String(item.product_name ?? item.name ?? item.product_name_translated ?? item.title ?? item.service_name ?? 'Unknown'),
-            rawPrice: parseFloat(item.product_price ?? item.rate ?? item.price ?? item.cost ?? 0),
+            rawPrice: String(item.product_price ?? item.rate ?? item.price ?? item.cost ?? 0),
             minQty: parseInt(item.min ?? item.min_qty ?? item.min_quantity ?? 1, 10),
             maxQty: parseInt(item.max ?? item.max_qty ?? item.max_quantity ?? 9999, 10),
             isActive: item.active !== false && item.is_active !== false && item.status !== 'inactive' && item.status !== 'Inactive',

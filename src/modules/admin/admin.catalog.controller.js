@@ -100,7 +100,9 @@ const getProviderProduct = catchAsync(async (req, res) => {
  */
 const getProviderProductPrice = catchAsync(async (req, res) => {
     const pp = await ppService.getProviderProductById(req.params.id);
-    const rawPrice = pp.rawPrice || pp.rawPayload?.product_price || 0;
+    // Prefer rawPayload.product_price (original provider precision) over
+    // rawPrice which may have been truncated by older adapter logic.
+    const rawPrice = String(pp.rawPayload?.product_price ?? pp.rawPrice ?? '0');
     sendSuccess(res, {
         rawPrice,
         rawName: pp.rawName || pp.rawPayload?.product_name || '',

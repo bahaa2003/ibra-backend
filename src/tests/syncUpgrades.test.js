@@ -79,7 +79,7 @@ const makeProducts = (count, prefix = 'P') =>
     Array.from({ length: count }, (_, i) => ({
         externalProductId: `${prefix}-${String(i + 1).padStart(4, '0')}`,
         rawName: `Product ${i + 1}`,
-        rawPrice: parseFloat((Math.random() * 50 + 1).toFixed(2)),
+        rawPrice: String((Math.random() * 50 + 1).toFixed(2)),
         minQty: 1,
         maxQty: 100,
         isActive: true,
@@ -402,7 +402,7 @@ describe('[4] Idempotency with concurrent batches (DB-backed)', () => {
         const updatedProduct = [{
             ...products[0],
             rawName: 'Updated Raw Name',
-            rawPrice: 99.99,
+            rawPrice: '99.99',
         }];
         await syncProviderProducts(provider._id, { products: updatedProduct });
 
@@ -413,7 +413,7 @@ describe('[4] Idempotency with concurrent batches (DB-backed)', () => {
 
         expect(doc.translatedName).toBe('المنتج المترجم');  // preserved
         expect(doc.rawName).toBe('Updated Raw Name');        // updated
-        expect(doc.rawPrice).toBe(99.99);                    // updated
+        expect(doc.rawPrice).toBe('99.99');                   // updated
     });
 
     it('syncResult contains correct syncedAt timestamp', async () => {

@@ -25,6 +25,7 @@ const {
 const { convertUsdToUserCurrency } = require('../../services/currencyConverter.service');
 const { User } = require('../users/user.model');
 const { getLivePrice, invalidate: invalidatePriceCache } = require('../providers/providerPriceCache');
+const { toDecimal, toStr, toFiat, multiply, subtract, add, isPositive, compare } = require('../../shared/utils/decimalPrecision');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JIT PRICE AUTO-UPDATE HELPER
@@ -51,7 +52,7 @@ const _autoUpdateProductPrice = (productId, newProviderPrice, markupType, markup
     // Intentionally NOT awaited — fire-and-forget
     (async () => {
         try {
-            const safeProviderPrice = parseFloat(newProviderPrice.toFixed(6));
+            const safeProviderPrice = String(newProviderPrice);
             const newFinalPrice = computeFinalPrice(safeProviderPrice, markupType, markupValue);
             const newBasePrice = newFinalPrice ?? safeProviderPrice;
 
@@ -236,9 +237,8 @@ const _attemptCreateOrder = async (
                     );
 
                     if (livePrice !== null && product.providerPrice != null) {
-                        const storedPrice = Number(product.providerPrice);
-
-                        if (livePrice > storedPrice) {
+                        // Use decimal.js for lossless comparison (prices are 50dp strings)
+                        if (compare(String(livePrice), String(product.providerPrice)) > 0) {
                             // ── Price increased — abort order, auto-update DB ──
                             _autoUpdateProductPrice(product._id, livePrice, product.markupType, product.markupValue);
                             invalidatePriceCache(String(product.provider));
@@ -262,22 +262,20 @@ const _attemptCreateOrder = async (
 
         // ── 3. Pricing Engine (USD) ────────────────────────────────────────────
         const pricing = await calculateUserPrice(userId, product.basePrice, session);
-        // Retain full precision — do NOT round until the final chargedAmount.
-        // This prevents micro-prices ($0.0002/unit) from being zeroed out.
-        const usdTotalPrice = pricing.finalPrice * qty;
+        const usdTotalPrice = multiply(pricing.finalPrice, String(qty));
 
         // ── 3a. Profit Calculation (USD) ────────────────────────────────────────
         // Profit = markup portion only = (markedUpPrice - basePrice) × quantity
-        const profitUsd = (pricing.finalPrice - pricing.basePrice) * qty;
+        const profitUsd = multiply(subtract(pricing.finalPrice, pricing.basePrice), String(qty));
 
         // ── 3b. Currency Conversion ────────────────────────────────────────────
         // Fetch the user's preferred currency (within the session for consistency).
         // For USD users this is a no-op (rate = 1, finalAmount = usdTotalPrice).
         const userDoc = await User.findById(userId).select('currency').session(session);
         const userCurrency = userDoc?.currency ?? 'USD';
-        const conversion = await convertUsdToUserCurrency(usdTotalPrice, userCurrency);
+        const conversion = await convertUsdToUserCurrency(Number(toDecimal(usdTotalPrice).toNumber()), userCurrency);
         // ── FINAL ROUNDING — only place we round to 2dp ────────────────────
-        const chargedAmount = Number(parseFloat(conversion.finalAmount.toFixed(2)));
+        const chargedAmount = toFiat(conversion.finalAmount);
         const rateSnapshot = conversion.rate;
 
         // ── 3c. FINAL PRICE GUARD ──────────────────────────────────────────────
@@ -317,9 +315,9 @@ const _attemptCreateOrder = async (
             markupPercentageSnapshot: pricing.markupPercentage,
             finalPriceCharged: pricing.finalPrice,
             groupIdSnapshot: pricing.groupId,
-            profitUsd: Number(profitUsd.toFixed(2)),
+            profitUsd: profitUsd,
             unitPrice: pricing.finalPrice,
-            totalPrice: chargedAmount,   // legacy field — now equals chargedAmount
+            totalPrice: String(chargedAmount),   // legacy field — now equals chargedAmount
             walletDeducted,
             creditUsedAmount,
             status: initialStatus,
@@ -328,7 +326,7 @@ const _attemptCreateOrder = async (
             // ── Currency snapshot ────────────────────────────────────────────
             currency: userCurrency,
             rateSnapshot,
-            usdAmount: Number(usdTotalPrice.toFixed(6)),
+            usdAmount: usdTotalPrice,
             chargedAmount,
         };
         if (idempotencyKey) orderData.idempotencyKey = idempotencyKey;

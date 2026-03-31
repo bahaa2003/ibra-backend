@@ -51,13 +51,17 @@ const orderSchema = new mongoose.Schema(
 
         unitPrice: {
             // Legacy field — equals finalPriceCharged. Kept for backwards-compat.
-            type: Number,
+            type: String,
             required: [true, 'Unit price is required'],
+            get: (v) => String(v ?? '0'),
+            set: (v) => String(v ?? '0'),
         },
 
         totalPrice: {
-            type: Number,
+            type: String,
             required: [true, 'Total price is required'],
+            get: (v) => String(v ?? '0'),
+            set: (v) => String(v ?? '0'),
         },
 
         // ── Pricing Snapshots ────────────────────────────────────────────────
@@ -65,9 +69,10 @@ const orderSchema = new mongoose.Schema(
 
         /** Raw product basePrice at time of order. */
         basePriceSnapshot: {
-            type: Number,
+            type: String,
             required: [true, 'basePriceSnapshot is required'],
-            min: [0, 'basePriceSnapshot cannot be negative'],
+            get: (v) => String(v ?? '0'),
+            set: (v) => String(v ?? '0'),
         },
 
         /** The group's markup percentage applied at time of order. */
@@ -79,9 +84,10 @@ const orderSchema = new mongoose.Schema(
 
         /** Final per-unit price charged (basePrice + markup). */
         finalPriceCharged: {
-            type: Number,
+            type: String,
             required: [true, 'finalPriceCharged is required'],
-            min: [0, 'finalPriceCharged cannot be negative'],
+            get: (v) => String(v ?? '0'),
+            set: (v) => String(v ?? '0'),
         },
 
         /** Snapshot of the group the user belonged to at time of order. */
@@ -97,9 +103,10 @@ const orderSchema = new mongoose.Schema(
          * Written once at creation time. Immutable.
          */
         profitUsd: {
-            type: Number,
-            default: 0,
-            min: [0, 'profitUsd cannot be negative'],
+            type: String,
+            default: '0',
+            get: (v) => String(v ?? '0'),
+            set: (v) => String(v ?? '0'),
         },
 
         // ── Financial Split Tracking ─────────────────────────────────────────
@@ -112,10 +119,11 @@ const orderSchema = new mongoose.Schema(
         },
 
         creditUsedAmount: {
-            type: Number,
+            type: String,
             required: true,
-            default: 0,
-            min: [0, 'Credit used amount cannot be negative'],
+            default: '0',
+            get: (v) => String(v ?? '0'),
+            set: (v) => String(v ?? '0'),
         },
 
         // ── Currency Snapshot ────────────────────────────────────────────────
@@ -151,9 +159,10 @@ const orderSchema = new mongoose.Schema(
          * Used to pay providers (always USD).
          */
         usdAmount: {
-            type: Number,
+            type: String,
             default: null,
-            min: [0, 'usdAmount cannot be negative'],
+            get: (v) => v != null ? String(v) : null,
+            set: (v) => v != null ? String(v) : null,
         },
 
         /**

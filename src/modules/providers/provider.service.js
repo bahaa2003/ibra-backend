@@ -127,8 +127,8 @@ const publishProduct = async ({
 
     // If sync mode, override basePrice with current rawPrice
     const resolvedBasePrice = pricingMode === PRICING_MODES.SYNC
-        ? parseFloat(pp.rawPrice.toFixed(6))
-        : parseFloat(parseFloat(basePrice).toFixed(6));
+        ? String(pp.rawPrice)
+        : String(basePrice);
 
     const product = await Product.create({
         name,
@@ -178,7 +178,7 @@ const updatePublishedProduct = async (productId, updates) => {
     );
 
     if (switchingToSync) {
-        safe.basePrice = parseFloat(product.providerProduct.rawPrice.toFixed(6));
+        safe.basePrice = String(product.providerProduct.rawPrice);
     }
 
     // Manual mode: allow admin to set basePrice freely (already in safe object)

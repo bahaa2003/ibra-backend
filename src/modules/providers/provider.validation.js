@@ -2,6 +2,14 @@
 
 const { body, param, query } = require('express-validator');
 const { PRICING_MODES, MARKUP_TYPES, EXECUTION_TYPES } = require('../products/product.model');
+const { isPositive } = require('../../shared/utils/decimalPrecision');
+
+const isPositiveDecimalString = (value) => {
+    if (value == null || value === '') return false;
+    const n = Number(value);
+    if (isNaN(n)) return false;
+    return isPositive(value);
+};
 
 // ─── Provider CRUD ────────────────────────────────────────────────────────────
 
@@ -112,7 +120,7 @@ const publishProductValidation = [
 
     body('basePrice')
         .optional({ nullable: true })
-        .isFloat({ min: 0.01 }).withMessage('basePrice must be > 0'),
+        .custom((v) => v == null || isPositiveDecimalString(v)).withMessage('basePrice must be > 0'),
 
     body('minQty')
         .optional()
@@ -128,7 +136,7 @@ const publishProductValidation = [
 
     body('image')
         .optional({ nullable: true })
-        .isURL().withMessage('image must be a valid URL'),
+        .isString().withMessage('image must be a string'),
 
     body('displayOrder')
         .optional()
@@ -163,11 +171,11 @@ const updatePublishedProductValidation = [
 
     body('name').optional().isString().trim().isLength({ min: 2, max: 200 }),
     body('description').optional({ nullable: true }).isString().trim(),
-    body('basePrice').optional().isFloat({ min: 0.01 }),
+    body('basePrice').optional().custom((v) => v == null || isPositiveDecimalString(v)),
     body('minQty').optional().isInt({ min: 1 }),
     body('maxQty').optional().isInt({ min: 1 }),
     body('category').optional({ nullable: true }).isString().trim(),
-    body('image').optional({ nullable: true }).isURL(),
+    body('image').optional({ nullable: true }).isString(),
     body('displayOrder').optional().isInt(),
     body('isActive').optional().isBoolean(),
     body('pricingMode').optional().isIn(Object.values(PRICING_MODES)),

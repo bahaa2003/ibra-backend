@@ -52,7 +52,7 @@ const axios = require('axios');
 const crypto = require('crypto');
 const { BaseProviderAdapter } = require('./base.adapter');
 
-const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_TIMEOUT_MS = 60_000;
 
 // ─── Status normaliser (Alkasr → internal canonical) ─────────────────────────
 
@@ -164,7 +164,7 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
         return list.map((item) => this._validateDTO({
             externalProductId: String(item.id ?? item.product_id ?? item.service_id ?? item.code),
             rawName: String(item.name ?? item.product_name ?? item.service_name ?? item.title ?? 'Unknown'),
-            rawPrice: parseFloat(item.price ?? item.cost ?? item.rate ?? item.cost_per_unit ?? 0),
+            rawPrice: String(item.price ?? item.cost ?? item.rate ?? item.cost_per_unit ?? 0),
             minQty: parseInt(item.qty_values?.min ?? item.min ?? item.min_quantity ?? 1, 10),
             maxQty: parseInt(item.qty_values?.max ?? item.max ?? item.max_quantity ?? 9999, 10),
             isActive: item.is_active !== false

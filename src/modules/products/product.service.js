@@ -24,6 +24,7 @@
 
 const { Product, PRICING_MODES, MARKUP_TYPES, computeFinalPrice } = require('./product.model');
 const { ProviderProduct } = require('../providers/providerProduct.model');
+const { isPositive, add } = require('../../shared/utils/decimalPrecision');
 const {
     NotFoundError,
     ConflictError,
@@ -115,7 +116,7 @@ const createProduct = async ({
         : executionType;
 
     // ── Pricing calculation ───────────────────────────────────────────────
-    let resolvedBasePrice = parseFloat(parseFloat(basePrice).toFixed(6));
+    let resolvedBasePrice = String(basePrice);
     let resolvedFinalPrice = null;
     let resolvedProviderPrice = null;
 
@@ -123,8 +124,8 @@ const createProduct = async ({
         // Fetch provider product's raw price for markup calculation
         const pp = await ProviderProduct.findById(providerProduct).select('rawPrice rawPayload');
         if (pp) {
-            const effectiveRawPrice = Number(pp.rawPrice || pp.rawPayload?.product_price || 0) || 0;
-            resolvedProviderPrice = parseFloat(effectiveRawPrice.toFixed(6));
+            const effectiveRawPrice = String(pp.rawPrice || pp.rawPayload?.product_price || 0);
+            resolvedProviderPrice = effectiveRawPrice;
 
             if (pricingMode === PRICING_MODES.SYNC) {
                 resolvedFinalPrice = computeFinalPrice(resolvedProviderPrice, markupType, markupValue);
@@ -141,8 +142,8 @@ const createProduct = async ({
     }
 
     // Guard: if computed price is 0 but admin supplied a valid basePrice, use it
-    if (resolvedBasePrice <= 0 && parseFloat(basePrice) > 0) {
-        resolvedBasePrice = parseFloat(parseFloat(basePrice).toFixed(6));
+    if (!isPositive(resolvedBasePrice) && isPositive(basePrice)) {
+        resolvedBasePrice = String(basePrice);
         resolvedFinalPrice = resolvedBasePrice;
     }
 
@@ -238,8 +239,8 @@ const publishFromProviderProduct = async ({
 
     // ── Compute pricing ───────────────────────────────────────────────────────
     // Fallback: if rawPrice is 0 but rawPayload has the real price, use that
-    const effectiveRawPrice = Number(pp.rawPrice || pp.rawPayload?.product_price || 0) || 0;
-    const providerPrice = parseFloat(effectiveRawPrice.toFixed(6));
+    const effectiveRawPrice = String(pp.rawPrice || pp.rawPayload?.product_price || 0);
+    const providerPrice = effectiveRawPrice;
 
     let resolvedFinalPrice;
     let resolvedBasePrice;
@@ -254,7 +255,7 @@ const publishFromProviderProduct = async ({
             resolvedFinalPrice = computeFinalPrice(providerPrice, markupType, markupValue);
             resolvedBasePrice = resolvedFinalPrice ?? providerPrice;
         } else if (basePrice != null) {
-            resolvedBasePrice = parseFloat(parseFloat(basePrice).toFixed(6));
+            resolvedBasePrice = String(basePrice);
             resolvedFinalPrice = resolvedBasePrice;
         } else {
             resolvedBasePrice = providerPrice;
@@ -263,8 +264,8 @@ const publishFromProviderProduct = async ({
     }
 
     // Guard: if computed price is 0 but admin supplied a valid basePrice, use it
-    if (resolvedBasePrice <= 0 && basePrice != null && parseFloat(basePrice) > 0) {
-        resolvedBasePrice = parseFloat(parseFloat(basePrice).toFixed(6));
+    if (!isPositive(resolvedBasePrice) && basePrice != null && isPositive(basePrice)) {
+        resolvedBasePrice = String(basePrice);
         resolvedFinalPrice = resolvedBasePrice;
     }
 
@@ -337,29 +338,65 @@ const updateProduct = async (productId, updates) => {
     const basePriceChanged = safe.basePrice != null;
     const hasProviderLink = product.providerProduct != null;
 
+    // ── Fix 5 — Safety net: provider link changed ─────────────────────────
+    //
+    // When the admin changes the providerProduct reference (switches to a
+    // different provider service), the frontend's price payload may be stale
+    // or corrupted by the state mutation bug.  We treat the DB as the single
+    // source of truth: fetch the NEW ProviderProduct and forcefully override
+    // all pricing fields with its canonical rawPrice.
+    //
+    const incomingProviderProduct = safe.providerProduct ?? undefined;
+    const currentProviderProductId = product.providerProduct?._id?.toString()
+        ?? product.providerProduct?.toString()
+        ?? null;
+    const providerLinkChanged = incomingProviderProduct != null
+        && String(incomingProviderProduct) !== currentProviderProductId;
+
+    if (providerLinkChanged) {
+        const newPP = await ProviderProduct.findById(incomingProviderProduct)
+            .select('rawPrice rawPayload provider');
+        if (newPP) {
+            const canonicalRawPrice = String(
+                newPP.rawPrice || newPP.rawPayload?.product_price || 0
+            );
+            const newFinalPrice = computeFinalPrice(
+                canonicalRawPrice, effectiveMarkupType, effectiveMarkupValue
+            );
+            safe.providerPrice = canonicalRawPrice;
+            safe.finalPrice = newFinalPrice ?? canonicalRawPrice;
+            safe.basePrice = safe.finalPrice;
+            // Update provider reference to match the new ProviderProduct's provider
+            if (newPP.provider) {
+                safe.provider = newPP.provider;
+            }
+        }
+    }
+
     // ── Recompute pricing ────────────────────────────────────────────────
-    if (effectivePricingMode === PRICING_MODES.SYNC && hasProviderLink) {
+    // Skip recomputation if we already handled this in the safety-net above.
+    if (!providerLinkChanged && effectivePricingMode === PRICING_MODES.SYNC && hasProviderLink) {
         // SYNC mode: always compute from providerPrice + markup
         if (pricingModeChanged || markupChanged) {
             const pp = product.providerProduct;
-            const effectiveRawPrice = Number(pp.rawPrice || pp.rawPayload?.product_price || 0) || 0;
-            const rawPrice = parseFloat(effectiveRawPrice.toFixed(6));
+            const effectiveRawPrice = String(pp.rawPrice || pp.rawPayload?.product_price || 0);
+            const rawPrice = effectiveRawPrice;
             const newFinalPrice = computeFinalPrice(rawPrice, effectiveMarkupType, effectiveMarkupValue);
             safe.providerPrice = rawPrice;
             safe.finalPrice = newFinalPrice;
             safe.basePrice = newFinalPrice ?? rawPrice;
         }
-    } else if (effectivePricingMode === PRICING_MODES.MANUAL) {
+    } else if (!providerLinkChanged && effectivePricingMode === PRICING_MODES.MANUAL) {
         // MANUAL mode: admin controls basePrice
         if (basePriceChanged && !markupChanged) {
             // Admin directly set a basePrice — use it as-is
-            safe.basePrice = parseFloat(parseFloat(safe.basePrice).toFixed(6));
+            safe.basePrice = String(safe.basePrice);
             safe.finalPrice = safe.basePrice;
         } else if (markupChanged && hasProviderLink) {
             // Admin changed markup while in manual mode — apply one-time markup
             const pp = product.providerProduct;
-            const effectiveRawPrice = Number(pp.rawPrice || pp.rawPayload?.product_price || 0) || 0;
-            const rawPrice = parseFloat(effectiveRawPrice.toFixed(6));
+            const effectiveRawPrice = String(pp.rawPrice || pp.rawPayload?.product_price || 0);
+            const rawPrice = effectiveRawPrice;
             const newFinalPrice = computeFinalPrice(rawPrice, effectiveMarkupType, effectiveMarkupValue);
             safe.providerPrice = rawPrice;
             safe.finalPrice = newFinalPrice;
@@ -367,8 +404,8 @@ const updateProduct = async (productId, updates) => {
         } else if (basePriceChanged && markupChanged && hasProviderLink) {
             // Both changed — markup takes precedence over basePrice
             const pp = product.providerProduct;
-            const effectiveRawPrice = Number(pp.rawPrice || pp.rawPayload?.product_price || 0) || 0;
-            const rawPrice = parseFloat(effectiveRawPrice.toFixed(6));
+            const effectiveRawPrice = String(pp.rawPrice || pp.rawPayload?.product_price || 0);
+            const rawPrice = effectiveRawPrice;
             const newFinalPrice = computeFinalPrice(rawPrice, effectiveMarkupType, effectiveMarkupValue);
             safe.providerPrice = rawPrice;
             safe.finalPrice = newFinalPrice;
@@ -382,11 +419,11 @@ const updateProduct = async (productId, updates) => {
     const effectiveEnableManual = safe.enableManualPrice ?? product.enableManualPrice;
     const effectiveManualAdj = safe.manualPriceAdjustment ?? product.manualPriceAdjustment ?? 0;
 
-    if (effectiveEnableManual && hasProviderLink) {
+    if (!providerLinkChanged && effectiveEnableManual && hasProviderLink) {
         const pp = product.providerProduct;
-        const effectiveRawPrice = Number(pp.rawPrice || pp.rawPayload?.product_price || 0) || 0;
-        const rawPrice = parseFloat(effectiveRawPrice.toFixed(6));
-        const computedFinal = parseFloat((rawPrice + Number(effectiveManualAdj)).toFixed(6));
+        const effectiveRawPrice = String(pp.rawPrice || pp.rawPayload?.product_price || 0);
+        const rawPrice = effectiveRawPrice;
+        const computedFinal = add(rawPrice, String(effectiveManualAdj));
         safe.providerPrice = rawPrice;
         safe.finalPrice = computedFinal;
         safe.basePrice = computedFinal;

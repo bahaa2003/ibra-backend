@@ -280,11 +280,11 @@ const _performSync = async (provider, adapterOptions) => {
 
             for (const product of products) {
                 const newFinalPrice = computeFinalPrice(rawPrice, product.markupType, product.markupValue);
-                const newBasePrice = newFinalPrice ?? parseFloat(rawPrice.toFixed(6));
+                const newBasePrice = newFinalPrice ?? String(rawPrice);
 
                 await Product.findByIdAndUpdate(product._id, {
                     $set: {
-                        providerPrice: parseFloat(rawPrice.toFixed(6)),
+                        providerPrice: String(rawPrice),
                         finalPrice: newFinalPrice,
                         basePrice: newBasePrice,
                     },
@@ -434,11 +434,11 @@ const recalcProductPrices = async (providerProductId) => {
 
     for (const product of products) {
         const newFinalPrice = computeFinalPrice(pp.rawPrice, product.markupType, product.markupValue);
-        const newBasePrice = newFinalPrice ?? parseFloat(pp.rawPrice.toFixed(6));
+        const newBasePrice = newFinalPrice ?? String(pp.rawPrice);
 
         await Product.findByIdAndUpdate(product._id, {
             $set: {
-                providerPrice: parseFloat(pp.rawPrice.toFixed(6)),
+                providerPrice: String(pp.rawPrice),
                 finalPrice: newFinalPrice,
                 basePrice: newBasePrice,
             },

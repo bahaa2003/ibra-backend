@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const { computeMarkup, isPositive } = require('../../shared/utils/decimalPrecision');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -107,9 +108,10 @@ const productSchema = new mongoose.Schema(
          * (calculateUserPrice) which adds the group markup on top of this.
          */
         basePrice: {
-            type: Number,
+            type: String,
             required: [true, 'Base price is required'],
-            min: [0, 'basePrice cannot be negative'],
+            get: (v) => String(v ?? '0'),
+            set: (v) => String(v ?? '0'),
         },
 
         /**
@@ -117,9 +119,10 @@ const productSchema = new mongoose.Schema(
          * Null for manually-created products (no provider link).
          */
         providerPrice: {
-            type: Number,
+            type: String,
             default: null,
-            min: [0, 'providerPrice cannot be negative'],
+            get: (v) => v != null ? String(v) : null,
+            set: (v) => v != null ? String(v) : null,
         },
 
         /**
@@ -153,8 +156,10 @@ const productSchema = new mongoose.Schema(
          * Null for manual products without provider link.
          */
         finalPrice: {
-            type: Number,
+            type: String,
             default: null,
+            get: (v) => v != null ? String(v) : null,
+            set: (v) => v != null ? String(v) : null,
         },
 
         /**
@@ -192,8 +197,10 @@ const productSchema = new mongoose.Schema(
          *   finalPrice = providerPrice + manualPriceAdjustment
          */
         manualPriceAdjustment: {
-            type: Number,
-            default: 0,
+            type: String,
+            default: '0',
+            get: (v) => String(v ?? '0'),
+            set: (v) => String(v ?? '0'),
         },
 
         // ── Lifecycle ──────────────────────────────────────────────────────────
@@ -398,21 +405,14 @@ productSchema.index({ deletedAt: 1 }, { sparse: true });   // fast filter for no
  * Compute finalPrice = providerPrice + markup.
  * Pure function — does not mutate anything.
  *
- * @param {number} providerPrice
+ * @param {string|number} providerPrice
  * @param {'percentage'|'fixed'} markupType
- * @param {number} markupValue
- * @returns {number} rounded to 2 dp
+ * @param {string|number} markupValue
+ * @returns {string|null} arbitrary-precision string (up to 50 dp)
  */
 const computeFinalPrice = (providerPrice, markupType, markupValue) => {
-    if (typeof providerPrice !== 'number' || providerPrice < 0) return null;
-    let price;
-    if (markupType === MARKUP_TYPES.FIXED) {
-        price = providerPrice + markupValue;
-    } else {
-        // default: percentage
-        price = providerPrice * (1 + (markupValue / 100));
-    }
-    return parseFloat(price.toFixed(6));
+    if (!isPositive(providerPrice)) return null;
+    return computeMarkup(providerPrice, markupType, markupValue);
 };
 
 const Product = mongoose.model('Product', productSchema);

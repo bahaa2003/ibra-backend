@@ -55,9 +55,10 @@ const providerProductSchema = new mongoose.Schema(
         },
 
         rawPrice: {
-            type: Number,
+            type: String,
             required: [true, 'rawPrice is required'],
-            min: [0, 'rawPrice cannot be negative'],
+            get: (v) => String(v ?? '0'),
+            set: (v) => String(v ?? '0'),
         },
 
         minQty: {
