@@ -65,15 +65,23 @@ const getCurrencyHandler = catchAsync(async (req, res) => {
 
 /**
  * Update the platformRate (and optionally markupPercentage / name / symbol).
+ * If applyDebtAdjustment is true and rate increased, adjusts user debts.
  *
- * Body: { platformRate?, markupPercentage?, name?, symbol? }
+ * Body: { platformRate?, markupPercentage?, name?, symbol?, applyDebtAdjustment? }
  */
 const updateRateHandler = catchAsync(async (req, res) => {
-    const { platformRate, markupPercentage, name, symbol } = req.body;
-    const currency = await currencyService.updateCurrencyRate(req.params.code, {
+    const { platformRate, markupPercentage, name, symbol, applyDebtAdjustment } = req.body;
+    const { currency, debtAdjustment } = await currencyService.updateCurrencyRate(req.params.code, {
         platformRate, markupPercentage, name, symbol,
+        applyDebtAdjustment,
+        adminId: req.user?._id,
     });
-    sendSuccess(res, currency, `Currency '${currency.code}' updated.`);
+
+    const message = debtAdjustment?.usersAdjusted
+        ? `Currency '${currency.code}' updated. Debt adjustment applied to ${debtAdjustment.usersAdjusted} users.`
+        : `Currency '${currency.code}' updated.`;
+
+    sendSuccess(res, { currency, debtAdjustment }, message);
 });
 
 // =============================================================================

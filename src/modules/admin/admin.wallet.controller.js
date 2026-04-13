@@ -55,4 +55,16 @@ const setBalance = catchAsync(async (req, res) => {
     sendSuccess(res, { transaction: result.transaction, user: result.user }, 'Balance set successfully');
 });
 
-module.exports = { listWallets, getWallet, getTransactionHistory, addFunds, deductFunds, setBalance };
+// POST /admin/users/adjust-debt
+const adjustDebt = catchAsync(async (req, res) => {
+    const { percentage } = req.body;
+    const result = await svc.adjustNegativeBalancesForInflation(percentage, req.user._id);
+    sendSuccess(res, {
+        usersAdjusted: result.usersAdjusted,
+        totalAdjustment: result.totalAdjustment,
+        totalUsersInDebt: result.totalUsersInDebt,
+        errors: result.errors.length > 0 ? result.errors : undefined,
+    }, `Debt adjustment (${percentage}%) applied to ${result.usersAdjusted} users`);
+});
+
+module.exports = { listWallets, getWallet, getTransactionHistory, addFunds, deductFunds, setBalance, adjustDebt };

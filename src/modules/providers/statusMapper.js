@@ -76,15 +76,17 @@ const _MAP = {
     new:       ORDER_STATUS.PROCESSING,
     created:   ORDER_STATUS.PROCESSING,
 
-    // ── PARTIAL (treat as COMPLETED — partial delivery is still delivered) ───
-    partial:              ORDER_STATUS.COMPLETED,
-    partially_completed:  ORDER_STATUS.COMPLETED,
-    partial_complete:     ORDER_STATUS.COMPLETED,
+    // ── PARTIAL (provider delivered partial quantity → partial refund) ────────
+    partial:              ORDER_STATUS.PARTIAL,
+    partially_completed:  ORDER_STATUS.PARTIAL,
+    partial_complete:     ORDER_STATUS.PARTIAL,
 
-    // ── FAILED ──────────────────────────────────────────────────────────────
-    cancelled:  ORDER_STATUS.FAILED,
-    canceled:   ORDER_STATUS.FAILED,
-    cancel:     ORDER_STATUS.FAILED,
+    // ── CANCELED (provider explicitly canceled → full refund) ────────────────
+    cancelled:  ORDER_STATUS.CANCELED,
+    canceled:   ORDER_STATUS.CANCELED,
+    cancel:     ORDER_STATUS.CANCELED,
+
+    // ── FAILED (internal failures, rejected by provider) ────────────────────
     failed:     ORDER_STATUS.FAILED,
     fail:       ORDER_STATUS.FAILED,
     error:      ORDER_STATUS.FAILED,
@@ -123,21 +125,33 @@ const toInternalStatus = (providerStatus) => {
  */
 const isTerminal = (providerStatus) => {
     const mapped = toInternalStatus(providerStatus);
-    return mapped === ORDER_STATUS.COMPLETED || mapped === ORDER_STATUS.FAILED;
+    return mapped === ORDER_STATUS.COMPLETED
+        || mapped === ORDER_STATUS.FAILED
+        || mapped === ORDER_STATUS.CANCELED
+        || mapped === ORDER_STATUS.PARTIAL;
 };
 
 /**
  * Returns true when the provider status requires issuing a wallet refund.
+ * Includes both full refunds (cancelled) and partial refunds (partial delivery).
  *
  * @param {string} providerStatus
  * @returns {boolean}
  */
 const requiresRefund = (providerStatus) => {
     const key = String(providerStatus ?? '').toLowerCase().trim();
-    return key === 'cancelled' || key === 'canceled' || key === 'cancel'
+    // Full refund triggers
+    if (key === 'cancelled' || key === 'canceled' || key === 'cancel'
         || key === 'failed'    || key === 'fail'     || key === 'error'
         || key === 'reject'    || key === 'rejected'  || key === 'refunded'
-        || key === 'expired';
+        || key === 'expired') {
+        return true;
+    }
+    // Partial refund triggers
+    if (key === 'partial' || key === 'partially_completed' || key === 'partial_complete') {
+        return true;
+    }
+    return false;
 };
 
 module.exports = { PROVIDER_STATUS, toInternalStatus, isTerminal, requiresRefund };

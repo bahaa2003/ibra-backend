@@ -198,6 +198,7 @@ const updateGroupSchema = Joi.object({
     name: Joi.string().trim().min(2).max(64),
     percentage: Joi.number().min(0).max(1000),
     isActive: Joi.boolean(),
+    applyDebtAdjustment: Joi.boolean().default(false),
 }).min(1);
 
 // ─── Currency schemas ─────────────────────────────────────────────────────────
@@ -208,6 +209,7 @@ const updateCurrencySchema = Joi.object({
     }),
     markupPercentage: Joi.number().min(0).max(100),
     isActive: Joi.boolean(),
+    applyDebtAdjustment: Joi.boolean().default(false),
 }).min(1);
 
 const createCurrencySchema = Joi.object({
@@ -268,6 +270,19 @@ const approveDepositSchema = Joi.object({
     adminNotes: Joi.string().trim().max(500).optional().allow('', null),
 });
 
+// ─── Debt Adjustment schema ──────────────────────────────────────────────────
+
+const debtAdjustmentSchema = Joi.object({
+    percentage: Joi.number().positive().max(100).required().messages({
+        'number.positive': 'Percentage must be a positive number',
+        'number.max': 'Percentage cannot exceed 100',
+        'any.required': 'Percentage is required',
+    }),
+    reason: Joi.string().trim().min(3).max(255).optional().messages({
+        'string.min': 'Reason must be at least 3 characters',
+    }),
+});
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -303,5 +318,7 @@ module.exports = {
         updateSetting: updateSettingSchema,
         // Deposits approval
         approveDeposit: approveDepositSchema,
+        // Debt Adjustment
+        debtAdjustment: debtAdjustmentSchema,
     },
 };

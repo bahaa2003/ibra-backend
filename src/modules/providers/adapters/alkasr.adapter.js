@@ -52,7 +52,7 @@ const axios = require('axios');
 const crypto = require('crypto');
 const { BaseProviderAdapter } = require('./base.adapter');
 
-const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_TIMEOUT_MS = 180_000;
 
 // ─── Status normaliser (Alkasr → internal canonical) ─────────────────────────
 

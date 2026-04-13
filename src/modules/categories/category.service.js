@@ -54,6 +54,7 @@ const createCategory = async (data, adminId) => {
         image: data.image || null,
         sortOrder: data.sortOrder ?? 0,
         isActive: data.isActive !== false,
+        parentCategory: data.parentCategory || null,
     });
 
     createAuditLog({
@@ -82,6 +83,7 @@ const updateCategory = async (id, data, adminId) => {
     if (data.sortOrder !== undefined) category.sortOrder = data.sortOrder;
     if (data.isActive !== undefined) category.isActive = data.isActive;
     if (data.slug !== undefined) category.slug = data.slug;
+    if (data.parentCategory !== undefined) category.parentCategory = data.parentCategory || null;
 
     await category.save();
 

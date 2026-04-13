@@ -45,6 +45,12 @@ const getDashboardStats = catchAsync(async (_req, res) => {
                             failedOrders: {
                                 $sum: { $cond: [{ $eq: ['$status', ORDER_STATUS.FAILED] }, 1, 0] },
                             },
+                            canceledOrders: {
+                                $sum: { $cond: [{ $eq: ['$status', ORDER_STATUS.CANCELED] }, 1, 0] },
+                            },
+                            partialOrders: {
+                                $sum: { $cond: [{ $eq: ['$status', ORDER_STATUS.PARTIAL] }, 1, 0] },
+                            },
                         },
                     },
                 ],
@@ -84,6 +90,8 @@ const getDashboardStats = catchAsync(async (_req, res) => {
             pending: totals.pendingOrders || 0,
             processing: totals.processingOrders || 0,
             failed: totals.failedOrders || 0,
+            canceled: totals.canceledOrders || 0,
+            partial: totals.partialOrders || 0,
         },
         financials: {
             totalRevenueUsd: parseFloat((financials.totalRevenueUsd || 0).toFixed(2)),

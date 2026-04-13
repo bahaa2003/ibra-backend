@@ -562,6 +562,154 @@ const markOrderAsFailed = async (orderId, auditContext = null) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PROCESS ORDER REFUND — CANCELED (full) & PARTIAL (proportional)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Process a refund for an order that was CANCELED or PARTIAL.
+ *
+ * FULL REFUND (remains === 0, status CANCELED):
+ *   refundAmount = order.chargedAmount
+ *
+ * PARTIAL REFUND (remains > 0, status PARTIAL):
+ *   refundAmount = Math.floor((remains / order.quantity) * order.chargedAmount)
+ *
+ * Uses the ORIGINAL chargedAmount (what the user paid at order time) —
+ * NOT live USD conversion. If they paid 100 EGP, max refund is 100 EGP.
+ *
+ * Idempotency: if order.refunded === true, throws ALREADY_REFUNDED.
+ *
+ * @param {string|ObjectId} orderId
+ * @param {number}          remains      - undelivered units (0 = full refund)
+ * @param {Object|null}     auditContext - { actorId, actorRole, ipAddress?, userAgent? }
+ * @returns {Promise<Order>}
+ */
+const processOrderRefund = async (orderId, remains = 0, auditContext = null) => {
+    const session = await mongoose.startSession();
+
+    try {
+        session.startTransaction({
+            readConcern: { level: 'snapshot' },
+            writeConcern: { w: 'majority' },
+        });
+
+        const order = await Order.findById(orderId).session(session);
+        if (!order) throw new NotFoundError('Order');
+
+        // ── Idempotency guard ────────────────────────────────────────────────
+        if (order.refunded === true) {
+            throw new BusinessRuleError(
+                'A refund has already been issued for this order.',
+                'ALREADY_REFUNDED'
+            );
+        }
+
+        // ── Calculate refund amount ──────────────────────────────────────────
+        const chargedAmount = Number(order.chargedAmount || order.walletDeducted || 0);
+        if (chargedAmount <= 0) {
+            throw new BusinessRuleError(
+                'Order has no charged amount to refund.',
+                'NO_REFUNDABLE_AMOUNT'
+            );
+        }
+
+        const remainsCount = Math.max(0, parseInt(remains, 10) || 0);
+        const isPartial = remainsCount > 0 && remainsCount < order.quantity;
+
+        let refundAmount;
+        if (isPartial) {
+            // Proportional refund based on undelivered quantity
+            refundAmount = Math.floor((remainsCount / order.quantity) * chargedAmount);
+        } else {
+            // Full refund
+            refundAmount = chargedAmount;
+        }
+
+        if (refundAmount <= 0) {
+            throw new BusinessRuleError(
+                'Calculated refund amount is zero or negative.',
+                'INVALID_REFUND_AMOUNT'
+            );
+        }
+
+        // ── Update order state (before wallet, for idempotency) ──────────────
+        order.refunded = true;
+        order.refundedAt = new Date();
+        if (isPartial) {
+            order.remains = remainsCount;
+        }
+        await order.save({ session });
+
+        // ── Atomic wallet refund ─────────────────────────────────────────────
+        const description = isPartial
+            ? `Partial refund for Order #${order.orderNumber} (Remains: ${remainsCount}/${order.quantity})`
+            : `Full refund for Order #${order.orderNumber}`;
+
+        await refundWalletAtomic({
+            userId: order.userId,
+            walletDeducted: refundAmount,
+            creditUsedAmount: 0,
+            reference: order._id,
+            description,
+            session,
+        });
+
+        await session.commitTransaction();
+
+        // ── Audit — AFTER commit (fire-and-forget) ──────────────────────────
+        const actorId = auditContext?.actorId ?? order.userId;
+        const actorRole = auditContext?.actorRole ?? ACTOR_ROLES.SYSTEM;
+        const ipAddress = auditContext?.ipAddress ?? null;
+        const userAgent = auditContext?.userAgent ?? null;
+
+        const auditAction = isPartial
+            ? ORDER_ACTIONS.PARTIAL_REFUNDED
+            : ORDER_ACTIONS.REFUNDED;
+
+        createAuditLog({
+            actorId, actorRole, ipAddress, userAgent,
+            action: auditAction,
+            entityType: ENTITY_TYPES.ORDER,
+            entityId: order._id,
+            metadata: {
+                userId: order.userId,
+                orderNumber: order.orderNumber,
+                chargedAmount,
+                refundAmount,
+                remains: remainsCount,
+                quantity: order.quantity,
+                isPartial,
+                currency: order.currency,
+            },
+        });
+
+        createAuditLog({
+            actorId, actorRole, ipAddress, userAgent,
+            action: WALLET_ACTIONS.CREDIT,
+            entityType: ENTITY_TYPES.WALLET,
+            entityId: order.userId,
+            metadata: {
+                orderId: order._id,
+                orderNumber: order.orderNumber,
+                refundAmount,
+                currency: order.currency,
+                reason: isPartial ? 'PARTIAL_DELIVERY' : 'ORDER_CANCELED',
+            },
+        });
+
+        return order;
+
+    } catch (err) {
+        if (session.inTransaction()) {
+            await session.abortTransaction();
+        }
+        throw err;
+    } finally {
+        try { session.endSession(); } catch (_) { /* already ended */ }
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MARK ORDER AS COMPLETED
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -628,6 +776,7 @@ const getOrderById = async (orderId, userId = null) => {
 module.exports = {
     createOrder,
     markOrderAsFailed,
+    processOrderRefund,
     markOrderAsCompleted,
     listOrdersForUser,
     listAllOrders,

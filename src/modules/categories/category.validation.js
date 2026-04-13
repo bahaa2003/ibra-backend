@@ -17,6 +17,7 @@ const createCategorySchema = Joi.object({
     image: Joi.string().uri({ allowRelative: true }).allow('', null),
     sortOrder: Joi.number().integer().min(0).default(0),
     isActive: Joi.boolean().default(true),
+    parentCategory: Joi.string().hex().length(24).allow(null, '').default(null),
 });
 
 const updateCategorySchema = Joi.object({
@@ -26,6 +27,7 @@ const updateCategorySchema = Joi.object({
     slug: Joi.string().trim().lowercase(),
     sortOrder: Joi.number().integer().min(0),
     isActive: Joi.boolean(),
+    parentCategory: Joi.string().hex().length(24).allow(null, ''),
 }).min(1).messages({
     'object.min': 'At least one field must be provided for update',
 });

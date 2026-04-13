@@ -338,6 +338,116 @@ const setBalance = async (userId, targetBalance, reason, adminId) => {
     return { transaction, user: { walletBalance: newBalance, creditUsed: creditUsedAfter } };
 };
 
+// ─── Bulk Debt Adjustment (Currency Devaluation) ─────────────────────────────
+
+/**
+ * Adjust all negative wallet balances by a percentage increase to account
+ * for currency devaluation (debt pegging).
+ *
+ * For each user with walletBalance < 0:
+ *   adjustment = |walletBalance| × (percentageIncrease / 100)
+ *   newBalance = walletBalance - adjustment  (more negative)
+ *
+ * A DEBT_ADJUSTMENT transaction is created for each affected user
+ * with a clear description so the user understands the deduction.
+ *
+ * @param {number} percentageIncrease - e.g. 5 for a 5% devaluation
+ * @param {string|ObjectId} adminId       - the admin who triggered this action
+ * @param {string}          [currencyCode] - ISO 4217 code to filter users by (e.g. 'EGP')
+ * @returns {{ usersAdjusted, totalAdjustment, totalUsersInDebt, errors }}
+ */
+const adjustNegativeBalancesForInflation = async (percentageIncrease, adminId, currencyCode = null) => {
+    if (percentageIncrease <= 0 || percentageIncrease > 100) {
+        throw new BusinessRuleError(
+            'Percentage must be between 0.01 and 100.',
+            'INVALID_PERCENTAGE'
+        );
+    }
+
+    const multiplier = percentageIncrease / 100;
+
+    // Build query — filter by currency if provided
+    const query = { walletBalance: { $lt: 0 }, deletedAt: null };
+    if (currencyCode) {
+        query.currency = currencyCode.toUpperCase();
+    }
+
+    const usersInDebt = await User.find(query).select('_id walletBalance creditLimit creditUsed currency');
+
+    if (usersInDebt.length === 0) {
+        return { usersAdjusted: 0, totalAdjustment: 0, totalUsersInDebt: 0, errors: [] };
+    }
+
+    let usersAdjusted = 0;
+    let totalAdjustment = 0;
+    const errors = [];
+
+    for (const user of usersInDebt) {
+        try {
+            const balanceBefore = safeRound(user.walletBalance);
+            const adjustment = safeRound(Math.abs(balanceBefore) * multiplier);
+
+            // Skip negligible adjustments (less than 0.01)
+            if (adjustment < 0.01) continue;
+
+            const balanceAfter = safeRound(balanceBefore - adjustment);
+            const creditLimit = safeRound(Math.abs(Number(user.creditLimit || 0)));
+            const creditUsedBefore = safeRound(user.creditUsed || 0);
+
+            // Recalculate credit usage: if balance goes deeper negative,
+            // creditUsed increases by the adjustment (capped at creditLimit)
+            const creditUsedAfter = balanceAfter < 0
+                ? safeRound(Math.min(Math.abs(balanceAfter), creditLimit))
+                : 0;
+
+            // Atomic balance update
+            await User.findByIdAndUpdate(user._id, {
+                $set: {
+                    walletBalance: balanceAfter,
+                    creditUsed: creditUsedAfter,
+                },
+            });
+
+            // Create auditable wallet transaction
+            await WalletTransaction.create({
+                userId: user._id,
+                type: TRANSACTION_TYPES.DEBT_ADJUSTMENT,
+                amount: adjustment,
+                balanceBefore,
+                balanceAfter,
+                reference: null,
+                status: 'COMPLETED',
+                description: `Debt adjustment due to ${currencyCode || 'currency'} rate increase (${percentageIncrease}%)`,
+            });
+
+
+            usersAdjusted++;
+            totalAdjustment = safeRound(totalAdjustment + adjustment);
+        } catch (err) {
+            errors.push({ userId: user._id.toString(), error: err.message });
+        }
+    }
+
+    // Single audit log for the bulk operation
+    createAuditLog({
+        actorId: adminId,
+        actorRole: ACTOR_ROLES.ADMIN,
+        action: ADMIN_ACTIONS.DEBT_ADJUSTED,
+        entityType: ENTITY_TYPES.WALLET,
+        entityId: null,
+        metadata: {
+            type: 'BULK_DEBT_ADJUSTMENT',
+            percentageIncrease,
+            usersAdjusted,
+            totalAdjustment,
+            totalUsersInDebt: usersInDebt.length,
+            errors: errors.length > 0 ? errors : undefined,
+        },
+    });
+
+    return { usersAdjusted, totalAdjustment, totalUsersInDebt: usersInDebt.length, errors };
+};
+
 module.exports = {
     listWallets,
     getWallet,
@@ -345,4 +455,5 @@ module.exports = {
     addFunds,
     deductFunds,
     setBalance,
+    adjustNegativeBalancesForInflation,
 };

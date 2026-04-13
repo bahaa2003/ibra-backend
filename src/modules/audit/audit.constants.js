@@ -27,8 +27,10 @@ const ORDER_ACTIONS = Object.freeze({
     CREATED: 'ORDER_CREATED',
     COMPLETED: 'ORDER_COMPLETED',
     FAILED: 'ORDER_FAILED',
+    CANCELED: 'ORDER_CANCELED',             // ← NEW: provider canceled
+    PARTIAL_REFUNDED: 'ORDER_PARTIAL_REFUNDED', // ← NEW: partial delivery refund
     REFUNDED: 'ORDER_REFUNDED',
-    PROCESSING: 'ORDER_PROCESSING',   // ← new: order sent to provider
+    PROCESSING: 'ORDER_PROCESSING',
 });
 
 /** Actions on the Wallet / financial layer. */
@@ -75,6 +77,7 @@ const SYSTEM_ACTIONS = Object.freeze({
 /** Admin dashboard actions (manual adjustments, overrides). */
 const ADMIN_ACTIONS = Object.freeze({
     WALLET_ADJUSTED: 'ADMIN_WALLET_ADJUSTED',
+    DEBT_ADJUSTED: 'ADMIN_DEBT_ADJUSTED',
     ORDER_REFUNDED: 'ADMIN_ORDER_REFUNDED',
     ORDER_RETRIED: 'ADMIN_ORDER_RETRIED',
     USER_UPDATED: 'ADMIN_USER_UPDATED',

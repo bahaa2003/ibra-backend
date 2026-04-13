@@ -167,6 +167,45 @@ app.get(`${API_PREFIX}/settings/payment`, async (req, res) => {
     }
 });
 
+// ── Public Catalog (no auth — showcase only, ALL pricing stripped) ─────────────
+app.get(`${API_PREFIX}/public/catalog`, async (req, res) => {
+    try {
+        const { Category } = require('./modules/categories/category.model');
+        const { Product } = require('./modules/products/product.model');
+
+        const [categories, products] = await Promise.all([
+            Category.find({ isActive: true })
+                .select('name nameAr image slug sortOrder parentCategory')
+                .sort({ sortOrder: 1 })
+                .lean(),
+            Product.find({ isActive: true, deletedAt: null })
+                .select('name description image category displayOrder minQty maxQty orderFields')
+                .sort({ displayOrder: 1 })
+                .lean(),
+        ]);
+
+        // Double-check: strip any financial field that might leak via virtuals or getters
+        const safeProducts = products.map((p) => ({
+            _id: p._id,
+            name: p.name,
+            description: p.description || null,
+            image: p.image || null,
+            category: p.category || null,
+            displayOrder: p.displayOrder || 0,
+            minQty: p.minQty || 1,
+            maxQty: p.maxQty || 999,
+        }));
+
+        res.json({
+            success: true,
+            message: 'Public catalog',
+            data: { categories, products: safeProducts },
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, message: 'Failed to load public catalog' });
+    }
+});
+
 // ── Admin Routes ──────────────────────────────────────────────────────────────
 app.use(`${API_PREFIX}/admin`, adminRoutes);
 app.use(`${API_PREFIX}/admin`, adminCatalogRoutes);

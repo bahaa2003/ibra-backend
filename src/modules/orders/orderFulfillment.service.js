@@ -513,7 +513,7 @@ const processOrderStatusResult = async (order, statusResult) => {
         return { action: 'pending' };
     }
 
-    // Terminal: Completed
+    // Terminal: Completed — no refund needed
     if (!requiresRefund(providerStatus)) {
         await Order.findByIdAndUpdate(order._id, {
             $set: {
@@ -549,7 +549,104 @@ const processOrderStatusResult = async (order, statusResult) => {
         return { action: 'completed' };
     }
 
-    // Terminal: Cancelled — mark FAILED + refund
+    // ── Determine if this is CANCELED or PARTIAL ─────────────────────────
+    const mappedStatus = toInternalStatus(providerStatus);
+
+    if (mappedStatus === ORDER_STATUS.PARTIAL) {
+        // ── PARTIAL: extract remains from provider response ──────────────
+        const remainsStr = statusResult?.rawResponse?.remains
+            || statusResult?.rawResponse?.data?.remains
+            || '0';
+        const remains = parseInt(remainsStr, 10) || 0;
+
+        await Order.findByIdAndUpdate(order._id, {
+            $set: {
+                status: ORDER_STATUS.PARTIAL,
+                providerStatus: providerStatus,
+                providerRawResponse: statusResult.rawResponse,
+                remains: remains,
+                lastCheckedAt: now,
+            },
+        });
+
+        createAuditLog({
+            actorId: order.userId,
+            actorRole: ACTOR_ROLES.SYSTEM,
+            action: ORDER_ACTIONS.PARTIAL_REFUNDED,
+            entityType: ENTITY_TYPES.ORDER,
+            entityId: order._id,
+            metadata: {
+                orderId: order._id.toString(),
+                providerOrderId: order.providerOrderId,
+                status: providerStatus,
+                remains,
+                quantity: order.quantity,
+            },
+        });
+
+        // Trigger partial refund via processOrderRefund
+        const { processOrderRefund } = require('./order.service');
+        try {
+            await processOrderRefund(order._id, remains, {
+                actorId: order.userId,
+                actorRole: ACTOR_ROLES.SYSTEM,
+            });
+        } catch (e) {
+            console.error(`[Fulfillment] Partial refund error for ${order._id}:`, e.message);
+        }
+
+        return { action: 'failed' };
+    }
+
+    if (mappedStatus === ORDER_STATUS.CANCELED) {
+        // ── CANCELED: full refund ────────────────────────────────────────
+        await Order.findByIdAndUpdate(order._id, {
+            $set: {
+                status: ORDER_STATUS.CANCELED,
+                providerStatus: providerStatus,
+                providerRawResponse: statusResult.rawResponse,
+                failedAt: now,
+                lastCheckedAt: now,
+            },
+        });
+
+        createAuditLog({
+            actorId: order.userId,
+            actorRole: ACTOR_ROLES.SYSTEM,
+            action: PROVIDER_ACTIONS.ORDER_CANCELLED,
+            entityType: ENTITY_TYPES.ORDER,
+            entityId: order._id,
+            metadata: {
+                orderId: order._id.toString(),
+                providerOrderId: order.providerOrderId,
+                status: providerStatus,
+            },
+        });
+
+        createAuditLog({
+            actorId: order.userId,
+            actorRole: ACTOR_ROLES.SYSTEM,
+            action: ORDER_ACTIONS.CANCELED,
+            entityType: ENTITY_TYPES.ORDER,
+            entityId: order._id,
+            metadata: { orderId: order._id.toString(), reason: 'PROVIDER_CANCELLED' },
+        });
+
+        // Trigger full refund via processOrderRefund
+        const { processOrderRefund } = require('./order.service');
+        try {
+            await processOrderRefund(order._id, 0, {
+                actorId: order.userId,
+                actorRole: ACTOR_ROLES.SYSTEM,
+            });
+        } catch (e) {
+            console.error(`[Fulfillment] Full refund error for ${order._id}:`, e.message);
+        }
+
+        return { action: 'failed' };
+    }
+
+    // ── FAILED (internal failures, rejected) — existing refund path ──────
     await Order.findByIdAndUpdate(order._id, {
         $set: {
             status: ORDER_STATUS.FAILED,
@@ -579,12 +676,12 @@ const processOrderStatusResult = async (order, statusResult) => {
         action: ORDER_ACTIONS.FAILED,
         entityType: ENTITY_TYPES.ORDER,
         entityId: order._id,
-        metadata: { orderId: order._id.toString(), reason: 'PROVIDER_CANCELLED' },
+        metadata: { orderId: order._id.toString(), reason: 'PROVIDER_FAILED' },
     });
 
     const freshOrder = await Order.findById(order._id);
     await refundFailedOrder(freshOrder).catch((e) =>
-        console.error(`[Fulfillment] Refund error (cancelled) for ${order._id}:`, e.message)
+        console.error(`[Fulfillment] Refund error (failed) for ${order._id}:`, e.message)
     );
 
     return { action: 'failed' };

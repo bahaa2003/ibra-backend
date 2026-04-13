@@ -4,8 +4,10 @@ const mongoose = require('mongoose');
 
 const ORDER_STATUS = Object.freeze({
     PENDING: 'PENDING',
-    PROCESSING: 'PROCESSING',   // ← NEW: wallet deducted, awaiting provider confirmation
+    PROCESSING: 'PROCESSING',   // ← wallet deducted, awaiting provider confirmation
     COMPLETED: 'COMPLETED',
+    CANCELED: 'CANCELED',       // ← provider explicitly canceled → full refund
+    PARTIAL: 'PARTIAL',         // ← provider delivered partial quantity → partial refund
     FAILED: 'FAILED',
 });
 
@@ -266,6 +268,17 @@ const orderSchema = new mongoose.Schema(
         refunded: {
             type: Boolean,
             default: false,
+        },
+
+        /**
+         * Number of units the provider did NOT deliver.
+         * Only meaningful when status === PARTIAL.
+         * Used to calculate proportional refund: (remains / quantity) * chargedAmount.
+         */
+        remains: {
+            type: Number,
+            default: 0,
+            min: [0, 'Remains cannot be negative'],
         },
 
         // ── Dynamic Order Fields ───────────────────────────────────────────────

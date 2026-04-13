@@ -74,7 +74,14 @@ const register = async ({ name, email, password, currency, country, phone, usern
     // ── 1. Prevent duplicate accounts ─────────────────────────────────────────
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) {
-        throw new ConflictError('An account with this email address already exists.');
+        throw new ConflictError('email already exists');
+    }
+
+    if (username) {
+        const existingUsername = await User.findOne({ username: username.toLowerCase() });
+        if (existingUsername) {
+            throw new ConflictError('username already exists');
+        }
     }
 
     // ── 2. Pricing group ──────────────────────────────────────────────────────

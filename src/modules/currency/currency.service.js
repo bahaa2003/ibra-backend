@@ -87,21 +87,28 @@ const getCurrencyByCode = async (code) => {
  *   - USD platformRate is always 1. Attempts to set it to anything else throw.
  *   - platformRate must be > 0.
  *   - Updates invalidate the in-process converter cache immediately.
+ *   - If applyDebtAdjustment is true and the rate increased, automatically
+ *     adjusts all negative user balances by the percentage increase.
  *
  * @param {string} code           - ISO 4217 code
  * @param {Object} updates
- * @param {number} [updates.platformRate]        - new billing rate
- * @param {number} [updates.markupPercentage]    - optional markup (informational)
- * @param {string} [updates.name]               - display name override
- * @param {string} [updates.symbol]             - symbol override
- * @returns {Promise<Currency>}
+ * @param {number}  [updates.platformRate]          - new billing rate
+ * @param {number}  [updates.markupPercentage]      - optional markup (informational)
+ * @param {string}  [updates.name]                  - display name override
+ * @param {string}  [updates.symbol]                - symbol override
+ * @param {boolean} [updates.applyDebtAdjustment]   - opt-in to debt pegging
+ * @param {string}  [updates.adminId]               - admin ObjectId (required if applyDebtAdjustment)
+ * @returns {Promise<{ currency: Currency, debtAdjustment: Object|null }>}
  */
 const updateCurrencyRate = async (code, updates) => {
     const upper = (code ?? '').toUpperCase().trim();
     const doc = await Currency.findOne({ code: upper });
     if (!doc) throw new NotFoundError(`Currency '${upper}'`);
 
-    const { platformRate, markupPercentage, name, symbol } = updates;
+    const { platformRate, markupPercentage, name, symbol, applyDebtAdjustment, adminId } = updates;
+
+    // Capture old rate BEFORE mutation (needed for percentage calc)
+    const oldRate = doc.platformRate;
 
     // Guard: USD rate is always 1
     if (upper === 'USD' && platformRate !== undefined && platformRate !== 1) {
@@ -138,9 +145,35 @@ const updateCurrencyRate = async (code, updates) => {
     await doc.save();
 
     invalidateCurrencyCache(upper);
-    console.log(`[CurrencyService] ${upper} platformRate updated to ${doc.platformRate}.`);
 
-    return doc;
+    // Strictly cast to Number to prevent string comparison bugs
+    const newRate = Number(doc.platformRate);
+    const oldRateNum = Number(oldRate);
+    const isIncrease = newRate > oldRateNum;
+
+    // ── Debt Adjustment: if rate increased and admin opted in ──────────────
+    let debtAdjustmentResult = null;
+    if (
+        applyDebtAdjustment &&
+        platformRate !== undefined &&
+        isIncrease &&
+        oldRateNum > 0
+    ) {
+        const percentageIncrease = ((newRate - oldRateNum) / oldRateNum) * 100;
+        try {
+            const { adjustNegativeBalancesForInflation } = require('../admin/admin.wallet.service');
+            debtAdjustmentResult = await adjustNegativeBalancesForInflation(
+                parseFloat(percentageIncrease.toFixed(4)),
+                adminId,
+                upper   // ← pass the currency code so only matching users are affected
+            );
+        } catch (err) {
+            console.error(`[CurrencyService] Debt adjustment FAILED for ${upper}:`, err.message);
+            debtAdjustmentResult = { error: err.message, usersAdjusted: 0 };
+        }
+    }
+
+    return { currency: doc, debtAdjustment: debtAdjustmentResult };
 };
 
 // =============================================================================

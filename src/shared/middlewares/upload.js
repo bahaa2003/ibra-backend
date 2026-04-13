@@ -28,8 +28,8 @@ const { BusinessRuleError } = require('../errors/AppError');
 
 const UPLOADS_ROOT = path.join(__dirname, '..', '..', '..', 'uploads');
 
-/** Max file size: 5 MB */
-const MAX_FILE_SIZE = 5 * 1024 * 1024;
+/** Max file size: 20 MB */
+const MAX_FILE_SIZE = 20 * 1024 * 1024;
 
 /**
  * Allowed MIME types for image uploads.
@@ -39,9 +39,12 @@ const IMAGE_MIME_TYPES = new Set([
     'image/jpeg',
     'image/png',
     'image/webp',
+    'image/gif',
+    'image/svg+xml',
+    'image/bmp',
 ]);
 
-const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.bmp']);
 
 /** Deposits also accept PDFs */
 const DEPOSIT_MIME_TYPES = new Set([...IMAGE_MIME_TYPES, 'application/pdf']);
@@ -84,8 +87,8 @@ const createUpload = (category) => {
 
         if (!mimeOk || !extOk) {
             const accepted = isDeposit
-                ? 'JPG, JPEG, PNG, WebP, and PDF'
-                : 'JPG, JPEG, PNG, and WebP';
+                ? 'JPG, JPEG, PNG, WebP, GIF, SVG, BMP, and PDF'
+                : 'JPG, JPEG, PNG, WebP, GIF, SVG, and BMP';
             return cb(
                 new BusinessRuleError(
                     `Only ${accepted} files are accepted.`,

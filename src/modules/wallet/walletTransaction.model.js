@@ -9,6 +9,7 @@ const TRANSACTION_TYPES = Object.freeze({
     CREDIT: 'CREDIT',
     DEBIT: 'DEBIT',
     REFUND: 'REFUND',
+    DEBT_ADJUSTMENT: 'DEBT_ADJUSTMENT',
 });
 
 /**

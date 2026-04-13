@@ -8,7 +8,7 @@
 
 const mongoose = require('mongoose');
 const { Order, ORDER_STATUS } = require('../orders/order.model');
-const { markOrderAsFailed } = require('../orders/order.service');
+const { markOrderAsFailed, processOrderRefund } = require('../orders/order.service');
 const { getProviderAdapter } = require('../providers/adapters/adapter.factory');
 const { Provider } = require('../providers/provider.model');
 const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppError');
@@ -36,7 +36,7 @@ const listOrders = async ({
     page = 1,
     limit = 20,
 } = {}) => {
-    limit = Math.min(limit, 100);
+    limit = Math.min(limit, 500);
     const skip = (page - 1) * limit;
 
     const filter = {};
@@ -136,25 +136,35 @@ const retryOrder = async (orderId, adminId) => {
     return order;
 };
 
-// ─── Manual Refund ────────────────────────────────────────────────────────────
+// ─── Manual Refund ────────────────────────────────────────────────────────
 
 /**
- * Admin-forced refund of a PROCESSING or COMPLETED order.
+ * Admin-forced refund of an order.
  *
- * Delegates to the core markOrderAsFailed which atomically:
- *   - Sets status → FAILED
- *   - Refunds wallet
- *   - Writes audit logs
+ * Supports full refund (CANCELED/FAILED) and partial refund (PARTIAL).
+ *
+ * For non-refunded orders:
+ *   - If remains > 0: triggers partial refund via processOrderRefund
+ *   - If remains === 0: triggers full refund via markOrderAsFailed
  *
  * @param {string} orderId
  * @param {string} adminId
+ * @param {number} [remains=0] - undelivered units for partial refund
  */
-const refundOrder = async (orderId, adminId) => {
+const refundOrder = async (orderId, adminId, remains = 0) => {
     const order = await Order.findById(orderId);
     if (!order) throw new NotFoundError('Order');
 
-    if (order.status === ORDER_STATUS.FAILED) {
-        throw new BusinessRuleError('Order is already in FAILED (refunded) state.', 'ALREADY_REFUNDED');
+    // Guard: already refunded
+    if (order.refunded === true) {
+        throw new BusinessRuleError('A refund has already been issued for this order.', 'ALREADY_REFUNDED');
+    }
+
+    // Guard: terminal non-refundable states
+    if (order.status === ORDER_STATUS.FAILED || order.status === ORDER_STATUS.CANCELED) {
+        if (order.refundedAt) {
+            throw new BusinessRuleError('Order is already in a refunded state.', 'ALREADY_REFUNDED');
+        }
     }
 
     const auditContext = {
@@ -162,7 +172,20 @@ const refundOrder = async (orderId, adminId) => {
         actorRole: ACTOR_ROLES.ADMIN,
     };
 
-    const refunded = await markOrderAsFailed(orderId, auditContext);
+    const remainsCount = parseInt(remains, 10) || 0;
+    let refunded;
+
+    if (remainsCount > 0) {
+        // Partial refund — set status to PARTIAL first
+        if (order.status !== ORDER_STATUS.PARTIAL) {
+            order.status = ORDER_STATUS.PARTIAL;
+            await order.save();
+        }
+        refunded = await processOrderRefund(orderId, remainsCount, auditContext);
+    } else {
+        // Full refund — use existing markOrderAsFailed for FAILED status path
+        refunded = await markOrderAsFailed(orderId, auditContext);
+    }
 
     createAuditLog({
         actorId: adminId,
@@ -170,7 +193,12 @@ const refundOrder = async (orderId, adminId) => {
         action: ADMIN_ACTIONS.ORDER_REFUNDED,
         entityType: ENTITY_TYPES.ORDER,
         entityId: order._id,
-        metadata: { userId: order.userId, totalPrice: order.totalPrice },
+        metadata: {
+            userId: order.userId,
+            totalPrice: order.totalPrice,
+            remains: remainsCount,
+            isPartial: remainsCount > 0,
+        },
     });
 
     return refunded;
@@ -234,14 +262,43 @@ const syncOrderProviderStatus = async (orderId, adminId) => {
 
     // Map provider status → internal order status
     const ps = (statusResult.providerStatus || '').toLowerCase();
+    let statusChanged = false;
+    let newStatus = null;
+
     if (ps === 'completed' && order.status !== ORDER_STATUS.COMPLETED) {
         order.status = ORDER_STATUS.COMPLETED;
-    } else if (ps === 'cancelled' && order.status !== ORDER_STATUS.FAILED) {
-        order.status = ORDER_STATUS.FAILED;
+        statusChanged = true;
+        newStatus = 'COMPLETED';
+    } else if ((ps === 'cancelled' || ps === 'canceled') && order.status !== ORDER_STATUS.CANCELED) {
+        order.status = ORDER_STATUS.CANCELED;
+        statusChanged = true;
+        newStatus = 'CANCELED';
+    } else if ((ps === 'partial' || ps === 'partially_completed') && order.status !== ORDER_STATUS.PARTIAL) {
+        const remainsStr = statusResult.rawResponse?.remains
+            || statusResult.rawResponse?.data?.remains
+            || '0';
+        order.remains = parseInt(remainsStr, 10) || 0;
+        order.status = ORDER_STATUS.PARTIAL;
+        statusChanged = true;
+        newStatus = 'PARTIAL';
     }
     // 'Pending' → no status change (stays PROCESSING)
 
     await order.save();
+
+    // ── Trigger refund if status changed to CANCELED or PARTIAL ──────────
+    if (statusChanged && (newStatus === 'CANCELED' || newStatus === 'PARTIAL')) {
+        const remains = newStatus === 'PARTIAL' ? (order.remains || 0) : 0;
+        try {
+            await processOrderRefund(order._id, remains, {
+                actorId: adminId,
+                actorRole: ACTOR_ROLES.ADMIN,
+            });
+        } catch (refundErr) {
+            // Don't break the sync — log the refund failure
+            console.error(`[AdminOrders] Refund failed after sync for order ${orderId}:`, refundErr.message);
+        }
+    }
 
     createAuditLog({
         actorId: adminId,
@@ -254,6 +311,8 @@ const syncOrderProviderStatus = async (orderId, adminId) => {
             before,
             after: { providerStatus: order.providerStatus, status: order.status },
             providerOrderId: order.providerOrderId,
+            statusChanged,
+            newStatus,
         },
     });
 
@@ -282,6 +341,18 @@ const completeOrder = async (orderId, adminId) => {
         throw new BusinessRuleError(
             'Cannot complete a failed/refunded order. Create a new order instead.',
             'ORDER_ALREADY_FAILED'
+        );
+    }
+    if (order.status === ORDER_STATUS.CANCELED) {
+        throw new BusinessRuleError(
+            'Cannot complete a canceled order. Create a new order instead.',
+            'ORDER_ALREADY_CANCELED'
+        );
+    }
+    if (order.status === ORDER_STATUS.PARTIAL) {
+        throw new BusinessRuleError(
+            'Cannot complete a partially-refunded order. Create a new order instead.',
+            'ORDER_ALREADY_PARTIAL'
         );
     }
 

@@ -55,6 +55,17 @@ const categorySchema = new mongoose.Schema(
             type: Boolean,
             default: true,
         },
+
+        /**
+         * Self-referencing parent for sub-category hierarchy.
+         * null = top-level / root category.
+         */
+        parentCategory: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Category',
+            default: null,
+            index: true,
+        },
     },
     {
         timestamps: true,
@@ -66,6 +77,7 @@ const categorySchema = new mongoose.Schema(
 // ─── Indexes ──────────────────────────────────────────────────────────────────
 categorySchema.index({ isActive: 1, sortOrder: 1 });
 categorySchema.index({ slug: 1 });
+categorySchema.index({ parentCategory: 1, isActive: 1, sortOrder: 1 });
 
 // ─── Pre-save: auto-generate slug from name ───────────────────────────────────
 categorySchema.pre('save', function (next) {

@@ -21,6 +21,7 @@
  *   DELETE /admin/users/:id                 — soft delete
  *   PATCH  /admin/users/:id/approve         — approve
  *   PATCH  /admin/users/:id/reject          — reject
+ *   POST   /admin/users/adjust-debt          — bulk debt adjustment for currency devaluation
  *
  * PROVIDERS
  *   GET    /admin/providers                  — list
@@ -117,6 +118,7 @@ router.get('/stats', statsCtrl.getDashboardStats);
 
 router.get('/users', validateQuery(schemas.listUsersQuery), usersCtrl.listUsers);
 router.get('/users/deleted', usersCtrl.listDeletedUsers); // MUST be before /:id
+router.post('/users/adjust-debt', walletLimiter, validateBody(schemas.debtAdjustment), walletCtrl.adjustDebt);
 router.get('/users/:id', usersCtrl.getUserById);
 router.patch('/users/:id', validateBody(schemas.updateUser), usersCtrl.updateUser);
 router.delete('/users/:id', usersCtrl.deleteUser);
@@ -191,23 +193,30 @@ router.get('/currencies', catchAsync(async (req, res) => {
 }));
 
 router.patch('/currencies/:code', validateBody(schemas.updateCurrency), catchAsync(async (req, res) => {
-    const { platformRate, markupPercentage, isActive } = req.body;
+    const { platformRate, markupPercentage, isActive, applyDebtAdjustment } = req.body;
     const code = req.params.code.toUpperCase();
-    const currency = await Currency.findOneAndUpdate(
-        { code },
-        {
-            ...(platformRate !== undefined && { platformRate }),
-            ...(markupPercentage !== undefined && { markupPercentage }),
-            ...(isActive !== undefined && { isActive }),
-            lastUpdatedAt: new Date(),
-        },
-        { new: true, runValidators: true }
-    );
-    if (!currency) {
-        const { NotFoundError } = require('../../shared/errors/AppError');
-        throw new NotFoundError('Currency');
+
+    // Delegate to the canonical currency service (handles debt adjustment internally)
+    const currencyService = require('../currency/currency.service');
+    const { currency, debtAdjustment } = await currencyService.updateCurrencyRate(code, {
+        platformRate,
+        markupPercentage,
+        applyDebtAdjustment,
+        adminId: req.user._id,
+    });
+
+    // Handle isActive separately (toggle status)
+    if (isActive !== undefined && currency.isActive !== isActive) {
+        currency.isActive = isActive;
+        currency.lastUpdatedAt = new Date();
+        await currency.save();
     }
-    sendSuccess(res, { currency }, 'Currency rate updated');
+
+    const message = debtAdjustment?.usersAdjusted
+        ? `Currency '${currency.code}' updated. Debt adjustment applied to ${debtAdjustment.usersAdjusted} users.`
+        : `Currency '${currency.code}' updated.`;
+
+    sendSuccess(res, { currency, debtAdjustment }, message);
 }));
 
 router.post('/currencies', validateBody(schemas.createCurrency), catchAsync(async (req, res) => {
