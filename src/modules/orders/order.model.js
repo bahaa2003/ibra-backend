@@ -192,6 +192,17 @@ const orderSchema = new mongoose.Schema(
             default: ORDER_EXECUTION_TYPES.MANUAL,
         },
 
+        /**
+         * Admin-provided reason when an order is rejected/failed.
+         * Visible to customers on the storefront.
+         * Null for non-rejected orders.
+         */
+        rejectionReason: {
+            type: String,
+            trim: true,
+            default: null,
+        },
+
         // ── Idempotency ──────────────────────────────────────────────────────
 
         idempotencyKey: {

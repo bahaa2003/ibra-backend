@@ -53,4 +53,22 @@ const completeOrder = catchAsync(async (req, res) => {
     sendSuccess(res, { order }, 'Order manually completed');
 });
 
-module.exports = { listOrders, getOrderById, retryOrder, refundOrder, syncOrderProviderStatus, completeOrder };
+// PATCH /admin/orders/:id/status — unified status update
+const updateStatus = catchAsync(async (req, res) => {
+    const { status, rejectionReason } = req.body;
+
+    if (!status) {
+        return res.status(422).json({ success: false, message: 'status is required in the request body.' });
+    }
+
+    const order = await svc.updateOrderStatus(
+        req.params.id,
+        status,
+        req.user._id,
+        { rejectionReason: rejectionReason || null }
+    );
+
+    sendSuccess(res, { order }, `Order status updated to ${order.status}.`);
+});
+
+module.exports = { listOrders, getOrderById, retryOrder, refundOrder, syncOrderProviderStatus, completeOrder, updateStatus };

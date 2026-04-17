@@ -87,7 +87,7 @@ const getCurrencyByCode = async (code) => {
  *   - USD platformRate is always 1. Attempts to set it to anything else throw.
  *   - platformRate must be > 0.
  *   - Updates invalidate the in-process converter cache immediately.
- *   - If applyDebtAdjustment is true and the rate increased, automatically
+ *   - If applyDebtAdjustment is true and the rate changed, automatically
  *     adjusts all negative user balances by the percentage increase.
  *
  * @param {string} code           - ISO 4217 code
@@ -149,24 +149,37 @@ const updateCurrencyRate = async (code, updates) => {
     // Strictly cast to Number to prevent string comparison bugs
     const newRate = Number(doc.platformRate);
     const oldRateNum = Number(oldRate);
-    const isIncrease = newRate > oldRateNum;
 
-    // ── Debt Adjustment: if rate increased and admin opted in ──────────────
+    // ── Debt Adjustment: if rate changed and admin opted in ───────────────
+    // Bi-directional: rate UP → debts increase (inflation pegging)
+    //                 rate DOWN → debts decrease (deflation relief)
     let debtAdjustmentResult = null;
     if (
         applyDebtAdjustment &&
         platformRate !== undefined &&
-        isIncrease &&
+        newRate !== oldRateNum &&
         oldRateNum > 0
     ) {
-        const percentageIncrease = ((newRate - oldRateNum) / oldRateNum) * 100;
+        const percentageChange = Math.abs(((newRate - oldRateNum) / oldRateNum) * 100);
+        const isIncrease = newRate > oldRateNum;
         try {
-            const { adjustNegativeBalancesForInflation } = require('../admin/admin.wallet.service');
-            debtAdjustmentResult = await adjustNegativeBalancesForInflation(
-                parseFloat(percentageIncrease.toFixed(4)),
-                adminId,
-                upper   // ← pass the currency code so only matching users are affected
-            );
+            const { adjustNegativeBalancesForInflation, adjustNegativeBalancesForDeflation } = require('../admin/admin.wallet.service');
+
+            if (isIncrease) {
+                // Rate went UP → debts grow (more negative)
+                debtAdjustmentResult = await adjustNegativeBalancesForInflation(
+                    parseFloat(percentageChange.toFixed(4)),
+                    adminId,
+                    upper
+                );
+            } else {
+                // Rate went DOWN → debts shrink (less negative) — relief
+                debtAdjustmentResult = await adjustNegativeBalancesForDeflation(
+                    parseFloat(percentageChange.toFixed(4)),
+                    adminId,
+                    upper
+                );
+            }
         } catch (err) {
             console.error(`[CurrencyService] Debt adjustment FAILED for ${upper}:`, err.message);
             debtAdjustmentResult = { error: err.message, usersAdjusted: 0 };

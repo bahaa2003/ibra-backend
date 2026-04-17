@@ -376,4 +376,52 @@ const completeOrder = async (orderId, adminId) => {
     return order;
 };
 
-module.exports = { listOrders, getOrderById, retryOrder, refundOrder, syncOrderProviderStatus, completeOrder };
+// ─── Unified Status Update ────────────────────────────────────────────────────
+
+/**
+ * Unified admin order status update.
+ *
+ * Dispatches to the correct action based on the target status:
+ *   'completed' | 'approved'  → completeOrder
+ *   'failed' | 'rejected' | 'refunded' | 'cancelled' | 'canceled' → refundOrder (+ sets rejectionReason)
+ *   'processing' | 'retry' | 'pending' → retryOrder
+ *
+ * This is the SINGLE entry point the frontend should call via
+ *   PATCH /admin/orders/:id/status   { status, rejectionReason? }
+ *
+ * @param {string} orderId
+ * @param {string} status - target status string
+ * @param {string} adminId
+ * @param {Object} [opts]
+ * @param {string} [opts.rejectionReason] - required when rejecting
+ * @returns {Promise<Order>}
+ */
+const updateOrderStatus = async (orderId, status, adminId, { rejectionReason } = {}) => {
+    const normalised = String(status || '').trim().toLowerCase();
+
+    if (['completed', 'approved'].includes(normalised)) {
+        return completeOrder(orderId, adminId);
+    }
+
+    if (['failed', 'rejected', 'denied', 'refunded', 'cancelled', 'canceled'].includes(normalised)) {
+        // Persist the admin's rejection reason on the order BEFORE the refund
+        // so the customer can see why.
+        if (rejectionReason) {
+            await Order.findByIdAndUpdate(orderId, {
+                rejectionReason: String(rejectionReason).trim(),
+            });
+        }
+        return refundOrder(orderId, adminId);
+    }
+
+    if (['processing', 'retry', 'pending'].includes(normalised)) {
+        return retryOrder(orderId, adminId);
+    }
+
+    throw new BusinessRuleError(
+        `Unknown target status '${status}'. Use: completed, rejected, processing.`,
+        'INVALID_TARGET_STATUS'
+    );
+};
+
+module.exports = { listOrders, getOrderById, retryOrder, refundOrder, syncOrderProviderStatus, completeOrder, updateOrderStatus };

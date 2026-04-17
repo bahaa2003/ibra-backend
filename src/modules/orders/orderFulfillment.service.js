@@ -33,8 +33,6 @@ const {
     ACTOR_ROLES,
 } = require('../audit/audit.constants');
 const { toInternalStatus, isTerminal, requiresRefund } = require('../providers/statusMapper');
-const { User } = require('../users/user.model');
-const { convertUsdToUserCurrency } = require('../../services/currencyConverter.service');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IDEMPOTENT REFUND
@@ -57,7 +55,7 @@ const refundFailedOrder = async (order) => {
     // Compare-and-swap: only proceeds when refunded===false
     const swapped = await Order.findOneAndUpdate(
         { _id: order._id, refunded: false },
-        { $set: { refunded: true } },
+        { $set: { refunded: true, refundedAt: new Date() } },
         { new: true }
     );
 
@@ -74,20 +72,35 @@ const refundFailedOrder = async (order) => {
             writeConcern: { w: 'majority' },
         });
 
-        // ── Convert USD truth to user's CURRENT currency ─────────────────
-        const userDoc = await User.findById(order.userId).select('currency').session(session);
-        const currentCurrency = userDoc?.currency ?? 'USD';
-        const usdAmount = order.usdAmount || 0;
+        // ── Use the EXACT amounts originally deducted ────────────────────
+        // NEVER do a live currency conversion. Exchange rates fluctuate.
+        // The user must receive back exactly what was taken from their wallet.
+        //
+        // Source of truth (frozen at order creation):
+        //   walletDeducted   – amount taken from the wallet balance
+        //   creditUsedAmount – amount taken from the credit line
+        //   chargedAmount    – total (fallback for legacy orders)
+        const walletPortion = Number(order.walletDeducted || 0);
+        const creditPortion = Number(order.creditUsedAmount || 0);
 
-        const conversion = await convertUsdToUserCurrency(usdAmount, currentCurrency);
-        const refundAmount = conversion.finalAmount;
+        // Fallback: if split fields are 0 but chargedAmount exists, use it
+        const refundWallet = walletPortion > 0 ? walletPortion : Number(order.chargedAmount || 0);
+        const refundCredit = creditPortion;
+        const totalRefund = refundWallet + refundCredit;
+
+        if (totalRefund <= 0) {
+            // Nothing to refund — undo the CAS flag and bail
+            await Order.findByIdAndUpdate(order._id, { $set: { refunded: false, refundedAt: null } });
+            console.error(`[Fulfillment] refundFailedOrder: order ${order._id} has 0 refundable amount (walletDeducted=${order.walletDeducted}, chargedAmount=${order.chargedAmount})`);
+            return false;
+        }
 
         await refundWalletAtomic({
             userId: order.userId,
-            walletDeducted: refundAmount,
-            creditUsedAmount: 0,
+            walletDeducted: refundWallet,
+            creditUsedAmount: refundCredit,
             reference: order._id,
-            description: `Auto-refund: provider order ${order.providerOrderId ?? 'N/A'} failed (${usdAmount} USD → ${refundAmount} ${currentCurrency})`,
+            description: `Auto-refund: provider order ${order.providerOrderId ?? 'N/A'} failed (${totalRefund} ${order.currency || 'USD'})`,
             session,
         });
 
@@ -103,12 +116,12 @@ const refundFailedOrder = async (order) => {
             metadata: {
                 orderId: order._id.toString(),
                 providerOrderId: order.providerOrderId,
-                orderUsdAmount: usdAmount,
-                originalCurrency: order.currency,
-                refundCurrency: currentCurrency,
-                refundRate: conversion.rate,
-                refundAmount,
-                currencyChanged: order.currency !== currentCurrency,
+                currency: order.currency,
+                walletRefunded: refundWallet,
+                creditRefunded: refundCredit,
+                totalRefund,
+                originalChargedAmount: order.chargedAmount,
+                originalWalletDeducted: order.walletDeducted,
             },
         });
 
@@ -121,9 +134,10 @@ const refundFailedOrder = async (order) => {
             metadata: {
                 orderId: order._id.toString(),
                 providerOrderId: order.providerOrderId,
-                usdAmount,
-                refundCurrency: currentCurrency,
-                refundAmount,
+                walletRefunded: refundWallet,
+                creditRefunded: refundCredit,
+                totalRefund,
+                currency: order.currency,
                 reason: 'PROVIDER_ORDER_FAILED',
             },
         });
@@ -133,7 +147,7 @@ const refundFailedOrder = async (order) => {
     } catch (err) {
         if (session.inTransaction()) await session.abortTransaction();
         // Undo the refunded=true flag so the next retry can attempt again
-        await Order.findByIdAndUpdate(order._id, { $set: { refunded: false } });
+        await Order.findByIdAndUpdate(order._id, { $set: { refunded: false, refundedAt: null } });
         throw err;
     } finally {
         try { session.endSession(); } catch (_) { /* already ended */ }

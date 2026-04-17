@@ -483,38 +483,50 @@ const markOrderAsFailed = async (orderId, auditContext = null) => {
             );
         }
 
-        // ── Calculate refund in the user's CURRENT currency ──────────────────
-        // Source of truth: order.usdAmount (frozen at order creation time).
-        // Convert to the user's current wallet currency, NOT the currency at
-        // order time, to prevent cross-currency refund mismatch.
-        const userDoc = await User.findById(order.userId).select('currency').session(session);
-        const currentCurrency = userDoc?.currency ?? 'USD';
-        const usdAmount = order.usdAmount || 0;
+        // ── Refund amount — use the EXACT amounts originally deducted ────────
+        // NEVER do a live currency conversion here. Exchange rates fluctuate.
+        // The user must receive back exactly what was taken from their wallet.
+        //
+        // Source of truth (frozen at order creation):
+        //   walletDeducted   – amount taken from the wallet balance
+        //   creditUsedAmount – amount taken from the credit line
+        //   chargedAmount    – total (walletDeducted + creditUsed), fallback
+        const walletPortion = Number(order.walletDeducted || 0);
+        const creditPortion = Number(order.creditUsedAmount || 0);
 
-        const conversion = await convertUsdToUserCurrency(usdAmount, currentCurrency);
-        const refundAmount = conversion.finalAmount; // in user's current currency
+        // Fallback: if both split fields are 0 but chargedAmount exists,
+        // treat chargedAmount as a pure wallet charge (legacy orders).
+        const refundWallet = walletPortion > 0 ? walletPortion : Number(order.chargedAmount || 0);
+        const refundCredit = creditPortion;
+        const totalRefund = refundWallet + refundCredit;
 
+        if (totalRefund <= 0) {
+            throw new BusinessRuleError(
+                'Order has no charged amount to refund.',
+                'NO_REFUNDABLE_AMOUNT'
+            );
+        }
+
+        // ── Update order status ──────────────────────────────────────────────
         order.status = ORDER_STATUS.FAILED;
         order.failedAt = new Date();
         order.refundedAt = new Date();
         order.refunded = true;
         await order.save({ session });
 
-        // Refund the correctly-converted amount to the wallet.
-        // We pass the full refundAmount as walletDeducted; creditUsedAmount = 0
-        // because the refund is a flat credit — no credit-line accounting needed.
+        // ── Credit the wallet with the exact original amounts ────────────────
         await refundWalletAtomic({
             userId: order.userId,
-            walletDeducted: refundAmount,
-            creditUsedAmount: 0,
+            walletDeducted: refundWallet,
+            creditUsedAmount: refundCredit,
             reference: order._id,
-            description: `Refund for failed order #${order._id} (${usdAmount} USD → ${refundAmount} ${currentCurrency})`,
+            description: `Refund for failed order #${order.orderNumber || order._id} (${totalRefund} ${order.currency || 'USD'})`,
             session,
         });
 
         await session.commitTransaction();
 
-        // Audit — AFTER commit
+        // ── Audit — AFTER commit ─────────────────────────────────────────────
         const actorId = auditContext?.actorId ?? order.userId;
         const actorRole = auditContext?.actorRole ?? ACTOR_ROLES.ADMIN;
         const ipAddress = auditContext?.ipAddress ?? null;
@@ -527,13 +539,12 @@ const markOrderAsFailed = async (orderId, auditContext = null) => {
             entityId: order._id,
             metadata: {
                 userId: order.userId,
-                orderUsdAmount: usdAmount,
-                originalCurrency: order.currency,
+                currency: order.currency,
+                walletRefunded: refundWallet,
+                creditRefunded: refundCredit,
+                totalRefund,
                 originalChargedAmount: order.chargedAmount,
-                refundCurrency: currentCurrency,
-                refundRate: conversion.rate,
-                refundAmount,
-                currencyChanged: order.currency !== currentCurrency,
+                originalWalletDeducted: order.walletDeducted,
             },
         });
 
@@ -544,9 +555,11 @@ const markOrderAsFailed = async (orderId, auditContext = null) => {
             entityId: order.userId,
             metadata: {
                 orderId: order._id,
-                usdAmount,
-                refundCurrency: currentCurrency,
-                refundAmount,
+                orderNumber: order.orderNumber,
+                walletRefunded: refundWallet,
+                creditRefunded: refundCredit,
+                totalRefund,
+                currency: order.currency,
             },
         });
 
