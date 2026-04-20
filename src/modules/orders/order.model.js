@@ -4,11 +4,12 @@ const mongoose = require('mongoose');
 
 const ORDER_STATUS = Object.freeze({
     PENDING: 'PENDING',
-    PROCESSING: 'PROCESSING',   // ← wallet deducted, awaiting provider confirmation
+    PROCESSING: 'PROCESSING',     // ← wallet deducted, awaiting provider confirmation
     COMPLETED: 'COMPLETED',
-    CANCELED: 'CANCELED',       // ← provider explicitly canceled → full refund
-    PARTIAL: 'PARTIAL',         // ← provider delivered partial quantity → partial refund
+    CANCELED: 'CANCELED',         // ← provider explicitly canceled → full refund
+    PARTIAL: 'PARTIAL',           // ← provider delivered partial quantity → partial refund
     FAILED: 'FAILED',
+    MANUAL_REVIEW: 'MANUAL_REVIEW', // ← DLQ kill-switch: exceeded MAX_RETRY_COUNT, needs admin
 });
 
 const ORDER_EXECUTION_TYPES = Object.freeze({
@@ -16,8 +17,13 @@ const ORDER_EXECUTION_TYPES = Object.freeze({
     AUTOMATIC: 'automatic',    // ← NEW: goes through provider fulfillment engine
 });
 
-/** Maximum number of automatic status-poll retries before forcing FAILED. */
-const MAX_RETRY_COUNT = 5;
+/**
+ * Maximum number of automatic status-poll retries before the kill switch fires.
+ * At a 5-minute cron cadence, 24 retries ≈ 2 hours of polling.
+ * Orders exceeding this are moved to MANUAL_REVIEW instead of being auto-failed,
+ * preserving the wallet deduction until an admin inspects and resolves the order.
+ */
+const MAX_RETRY_COUNT = 24;
 
 const orderSchema = new mongoose.Schema(
     {
@@ -233,6 +239,22 @@ const orderSchema = new mongoose.Schema(
          * Used by CheckOrder / CheckListOrders polling.
          * Null until provider accepts the order.
          */
+        /**
+         * Immutable snapshot of the provider's canonical slug/code at the time
+         * the order was placed (e.g. 'alkasr', 'royal-crown', 'toros').
+         *
+         * Written ONCE at createOrder() time from providerDoc.slug (||.name).
+         * The cron groups PROCESSING orders by THIS field — NOT by traversing
+         * the Product — so admin route/provider changes never corrupt polling.
+         */
+        providerCode: {
+            type: String,
+            lowercase: true,
+            trim: true,
+            default: null,
+            index: true,
+        },
+
         providerOrderId: {
             type: mongoose.Schema.Types.Mixed,  // Number (Royal Crown) OR String (Alkasr "ID_xxx")
             default: null,
@@ -356,11 +378,12 @@ orderSchema.index(
 /**
  * Cron-job query index:
  * Efficiently find orders that are PROCESSING and have a provider order ID.
- * Also supports sorting by lastCheckedAt ASC (oldest-checked first).
+ * Groups by providerCode for the smart-polling loop.
+ * Supports sorting by lastCheckedAt ASC (oldest-checked first).
  */
 orderSchema.index(
-    { status: 1, providerOrderId: 1, lastCheckedAt: 1 },
-    { name: 'processing_orders_poll' }
+    { status: 1, executionType: 1, providerCode: 1, providerOrderId: 1, lastCheckedAt: 1 },
+    { name: 'processing_orders_poll_v2' }
 );
 
 const Order = mongoose.model('Order', orderSchema);

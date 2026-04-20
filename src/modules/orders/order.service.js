@@ -119,6 +119,12 @@ const createOrder = async ({
     // Tests always inject their own mock, so this branch is never reached
     // in test runs.
     let resolvedProvider = provider;
+
+    // providerCode is the canonical slug/name snapshot written to the Order.
+    // The cron uses this field — NOT the product — so a later admin provider
+    // swap cannot corrupt in-flight PROCESSING orders.
+    let providerCode = null;
+
     if (!resolvedProvider) {
         try {
             const prod = await Product.findById(productId)
@@ -131,6 +137,17 @@ const createOrder = async ({
                 const providerDoc = prod.provider.toObject
                     ? prod.provider
                     : await Provider.findById(prod.provider);
+
+                // ── Snapshot the provider code UNCONDITIONALLY ──────────────
+                // providerCode must be captured even when the provider is
+                // inactive — the code identifies which provider the order
+                // belongs to for admin review / DLQ.  The adapter is only
+                // obtained when the provider is active.
+                if (providerDoc) {
+                    providerCode = String(providerDoc.slug || providerDoc.name || '')
+                        .toLowerCase().trim() || null;
+                }
+
                 if (providerDoc?.isActive) {
                     resolvedProvider = getProviderAdapter(providerDoc);
                 } else {
@@ -141,10 +158,12 @@ const createOrder = async ({
             // Log instead of silently swallowing — critical for debugging
             console.error(`[Order] Provider resolution failed for product ${productId}:`, resolveErr.message);
             // resolvedProvider stays null — executeOrder will self-resolve
+            // providerCode may have been set before the error; if not, the
+            // fallback inside _attemptCreateOrder will try again.
         }
     }
 
-    return _attemptCreateOrder({ userId, productId, quantity, idempotencyKey, auditContext, orderFieldsValues, provider: resolvedProvider });
+    return _attemptCreateOrder({ userId, productId, quantity, idempotencyKey, auditContext, orderFieldsValues, provider: resolvedProvider, providerCode });
 
 };
 
@@ -154,7 +173,7 @@ const createOrder = async ({
  * @private
  */
 const _attemptCreateOrder = async (
-    { userId, productId, quantity, idempotencyKey, auditContext, orderFieldsValues, provider },
+    { userId, productId, quantity, idempotencyKey, auditContext, orderFieldsValues, provider, providerCode = null },
     isRetry = false
 ) => {
 
@@ -323,6 +342,8 @@ const _attemptCreateOrder = async (
             status: initialStatus,
             executionType: product.executionType,
             customerInput,
+            // ── Provider code snapshot (immutable — cron uses this, not product.provider) ──
+            providerCode: providerCode ?? null,
             // ── Currency snapshot ────────────────────────────────────────────
             currency: userCurrency,
             rateSnapshot,
@@ -428,7 +449,7 @@ const _attemptCreateOrder = async (
             session.endSession();
             await new Promise((r) => setTimeout(r, 10));
             return _attemptCreateOrder(
-                { userId, productId, quantity, idempotencyKey, auditContext, orderFieldsValues, provider },
+                { userId, productId, quantity, idempotencyKey, auditContext, orderFieldsValues, provider, providerCode },
                 true
             );
 

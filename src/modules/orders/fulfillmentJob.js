@@ -3,7 +3,7 @@
 /**
  * fulfillmentJob.js
  *
- * Background cron job that polls PROCESSING orders every minute.
+ * Background cron job that polls PROCESSING orders every 5 minutes.
  *
  * Lifecycle:
  *   start()   — schedule the job (called once from server.js after DB connects)
@@ -15,15 +15,14 @@
  *   - Jobs are serialised: if a run is still in progress when the next tick
  *     fires, the tick is skipped (_running flag)
  *   - No job is started in test environments (NODE_ENV === 'test')
- *   - Multi-provider aware: iterates all active providers, resolving the
- *     correct adapter for each via the adapter factory
- *   - Supports a providerOverride for single-provider tests
+ *   - pollProcessingOrders() now owns the grouping — it reads order.providerCode
+ *     (snapshotted immutably at order creation) and resolves the provider doc
+ *     itself.  This means fulfillmentJob no longer needs to iterate providers.
+ *   - providerOverride is kept for single-provider test injection
  */
 
 const cron = require('node-cron');
 const { pollProcessingOrders } = require('../orders/orderFulfillment.service');
-const { getProviderAdapter } = require('../providers/adapters/adapter.factory');
-const { Provider } = require('../providers/provider.model');
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -36,12 +35,13 @@ let _running = false;  // execution lock — prevents overlapping runs
  * Execute one polling cycle.
  * Safe to call manually (e.g. in integration tests or admin triggers).
  *
- * When providerOverride is passed, a single poll is run against that provider.
- * In production (providerOverride = null), all active providers are iterated
- * and each gets its own adapter + poll.
+ * When providerOverride is passed, the poll is run using that single adapter
+ * (test mode — all PROCESSING orders go through it regardless of providerCode).
+ * In production (providerOverride = null), pollProcessingOrders groups orders
+ * by their providerCode snapshot and resolves each adapter independently.
  *
  * @param {Object|null} [providerOverride]  - inject a single mock provider (tests)
- * @returns {Promise<Object|Object[]|null>} - stats from pollProcessingOrders
+ * @returns {Promise<Object|null>}          - stats from pollProcessingOrders
  */
 const runOnce = async (providerOverride = null) => {
     if (_running) {
@@ -53,44 +53,15 @@ const runOnce = async (providerOverride = null) => {
     const startedAt = Date.now();
 
     try {
-        // ── Test / single-provider override ───────────────────────────────────
-        if (providerOverride) {
-            const stats = await pollProcessingOrders(providerOverride);
-            const elapsed = Date.now() - startedAt;
-            console.log(`[FulfillmentJob] Poll completed in ${elapsed}ms:`, stats);
-            return stats;
-        }
-
-        // ── Production: iterate all active providers ───────────────────────────
-        const activeProviders = await Provider.find({ isActive: true });
-
-        if (activeProviders.length === 0) {
-            console.log('[FulfillmentJob] No active providers — nothing to poll.');
-            return null;
-        }
-
-        const allStats = [];
-
-        for (const providerDoc of activeProviders) {
-            try {
-                const adapter = getProviderAdapter(providerDoc);
-                const stats = await pollProcessingOrders(adapter);
-                allStats.push({ providerId: providerDoc._id.toString(), ...stats });
-            } catch (err) {
-                console.error(
-                    `[FulfillmentJob] Provider ${providerDoc.name} poll failed:`,
-                    err.message
-                );
-                allStats.push({
-                    providerId: providerDoc._id.toString(),
-                    error: err.message,
-                });
-            }
-        }
-
+        // pollProcessingOrders handles everything:
+        //   • groups orders by order.providerCode (immutable snapshot)
+        //   • resolves provider doc from DB by slug (not by product)
+        //   • calls checkOrders() per provider group
+        //   • processes each result, refunds on cancellation, retries on transient errors
+        const stats = await pollProcessingOrders(providerOverride ?? null);
         const elapsed = Date.now() - startedAt;
-        //console.log(`[FulfillmentJob] All providers polled in ${elapsed}ms:`, allStats);
-        return allStats;
+        console.log(`[FulfillmentJob] Poll completed in ${elapsed}ms:`, stats);
+        return stats;
 
     } catch (err) {
         console.error('[FulfillmentJob] Unhandled error in polling cycle:', err.message);
@@ -106,10 +77,10 @@ const runOnce = async (providerOverride = null) => {
  * Start the cron scheduler.
  * Call once from server.js after the DB connection is established.
  *
- * @param {string} [schedule='* * * * *']  - cron expression (default: every minute)
- * @param {Object} [providerOverride]       - inject single provider (tests only)
+ * @param {string} [schedule='*\/5 * * * *']  - cron expression (default: every 5 min)
+ * @param {Object} [providerOverride]          - inject single provider (tests only)
  */
-const start = (schedule = '* * * * *', providerOverride = null) => {
+const start = (schedule = '*/5 * * * *', providerOverride = null) => {
     if (process.env.NODE_ENV === 'test') {
         console.log('[FulfillmentJob] Skipped in test environment.');
         return;
@@ -140,5 +111,6 @@ const stop = () => {
         console.log('[FulfillmentJob] Fulfillment cron job stopped.');
     }
 };
+
 
 module.exports = { start, stop, runOnce };

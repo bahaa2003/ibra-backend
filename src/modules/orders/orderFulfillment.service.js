@@ -20,7 +20,7 @@
  */
 
 const mongoose = require('mongoose');
-const { Order, ORDER_STATUS, MAX_RETRY_COUNT } = require('../orders/order.model');
+const { Order, ORDER_STATUS, MAX_RETRY_COUNT, ORDER_EXECUTION_TYPES } = require('../orders/order.model');
 const { getExternalProductId } = require('../products/product.service');
 const { refundWalletAtomic } = require('../wallet/wallet.service');
 const { createAuditLog } = require('../audit/audit.service');
@@ -285,14 +285,42 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
             ...mappedCustomerFields,   // ← spread translated customer fields onto params
         });
     } catch (err) {
-        // placeOrder is designed to not throw, but be defensive
-        result = {
-            success: false,
-            providerOrderId: null,
-            providerStatus: 'Cancelled',
-            rawResponse: { message: err.message },
-            errorMessage: err.message,
-        };
+        // Classify the error: transient (network/timeout) vs hard rejection.
+        //
+        // TRANSIENT → keep PROCESSING so the cron can retry later.
+        //   Refunding immediately on a network blip would cause a double-loss:
+        //   the provider may have already accepted and queued the order.
+        //
+        // HARD FAILURE → order cannot proceed → mark FAILED + refund.
+        const isTransient =
+            err.code === 'ECONNABORTED'  ||
+            err.code === 'ETIMEDOUT'     ||
+            err.code === 'ECONNRESET'    ||
+            err.code === 'ENOTFOUND'     ||
+            err.response?.status === 503 ||
+            err.response?.status === 504 ||
+            String(err.message ?? '').toLowerCase().includes('timeout');
+
+        if (isTransient) {
+            console.warn(`[Fulfillment] Transient error placing order ${orderId} — leaving PROCESSING for cron retry:`, err.message);
+            // Return a synthetic "still pending" result — DO NOT refund.
+            result = {
+                success: true,
+                providerOrderId: null,
+                providerStatus: 'Pending',         // → stays PROCESSING
+                rawResponse: { message: err.message, isTransient: true },
+                errorMessage: null,
+            };
+        } else {
+            // Hard failure: provider explicitly rejected or gave an unexpected error.
+            result = {
+                success: false,
+                providerOrderId: null,
+                providerStatus: 'Cancelled',
+                rawResponse: err.providerBody ?? { message: err.message },
+                errorMessage: err.message,
+            };
+        }
     }
 
     console.log(`[Fulfillment] Provider response for order ${orderId}:`, JSON.stringify(result));
@@ -702,82 +730,251 @@ const processOrderStatusResult = async (order, statusResult) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CRON: POLL ALL PROCESSING ORDERS (batch)
+// CRON: POLL ALL PROCESSING ORDERS (batch, grouped by providerCode snapshot)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * pollProcessingOrders(provider)
- *
- * Called by the cron job every minute.
- * Finds all PROCESSING orders with a providerOrderId, batch-fetches their
- * status from the provider, then processes each result.
- *
- * Idempotent: safe to call concurrently because processOrderStatusResult uses
- * findByIdAndUpdate (not read-modify-write with save()).
- *
- * @param {Object} provider  - adapter instance
- * @returns {Promise<{
- *   checked: number,
- *   completed: number,
- *   failed: number,
- *   pending: number,
- *   errors: string[],
- * }>}
+ * Escape special regex characters in a string.
+ * @private
  */
-const pollProcessingOrders = async (provider) => {
-    const stats = { checked: 0, completed: 0, failed: 0, pending: 0, errors: [] };
+const _escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/**
+ * pollProcessingOrders(providerOverride?)
+ *
+ * Called by the cron job every N minutes.
+ *
+ * Finds all PROCESSING automatic orders with a providerOrderId, then groups
+ * them by order.providerCode — the immutable slug snapshotted at order-creation
+ * time. This is the race-condition fix: we never traverse product→provider,
+ * so an admin changing a product's provider cannot corrupt in-flight orders.
+ *
+ * Per-group:
+ *   1. Resolve the provider doc from DB by slug (not by product)
+ *   2. Call adapter.checkOrders(ids) — one HTTP batch call per provider
+ *   3. For each result:
+ *       Completed / accept    → COMPLETED
+ *       Cancelled / reject    → FAILED + refund  (via processOrderStatusResult)
+ *       wait / Pending / 5xx  → leave PROCESSING, increment retryCount
+ *
+ * @param {Object|null} [providerOverride]  - single mock provider (tests only)
+ * @returns {Promise<{ checked, completed, failed, pending, errors }>}
+ */
+const pollProcessingOrders = async (providerOverride = null) => {
+    const stats = { checked: 0, completed: 0, failed: 0, pending: 0, manualReview: 0, errors: [] };
+
+    // ── 1. Fetch all PROCESSING automatic orders with a provider-side ID ──────
     const processingOrders = await Order.find({
         status: ORDER_STATUS.PROCESSING,
+        executionType: ORDER_EXECUTION_TYPES.AUTOMATIC,
         providerOrderId: { $ne: null },
-    }).sort({ lastCheckedAt: 1 }).limit(200); // process oldest-checked first, cap at 200/run
+    }).sort({ lastCheckedAt: 1 }).limit(200);  // oldest-checked first, cap 200/run
 
-    if (!processingOrders.length) {
-        return stats;
-    }
+    if (!processingOrders.length) return stats;
 
-    stats.checked = processingOrders.length;
-    console.log(`[FulfillmentCron] Checking ${processingOrders.length} PROCESSING order(s)…`);
+    // ── 2. Dead-Letter Kill-Switch ────────────────────────────────────────────
+    // Partition orders into exhausted (retryCount >= MAX_RETRY_COUNT) and healthy.
+    // Exhausted orders are moved to MANUAL_REVIEW RIGHT NOW — NO provider API call
+    // is made for them. This prevents infinite loops when a provider goes offline.
+    const exhausted = [];
+    const healthy   = [];
 
-    // Batch-fetch statuses
-    const ids = processingOrders.map((o) => o.providerOrderId);
-    let statusResults = [];
-
-    try {
-        statusResults = await provider.checkOrdersBatch(ids);
-    } catch (err) {
-        stats.errors.push(`Batch check failed: ${err.message}`);
-        console.error('[FulfillmentCron] checkOrdersBatch error:', err.message);
-        return stats;
-    }
-
-    // Build a map from providerOrderId → statusResult for O(1) lookup
-    const resultMap = new Map(
-        statusResults.map((r) => [r.providerOrderId, r])
-    );
-
-    // Process each order
     for (const order of processingOrders) {
-        const statusResult = resultMap.get(order.providerOrderId);
-
-        if (!statusResult) {
-            // Provider didn't include this order in the response — skip this cycle
-            stats.pending++;
-            continue;
-        }
-
-        try {
-            const { action } = await processOrderStatusResult(order, statusResult);
-            if (action === 'completed') stats.completed++;
-            else if (action === 'failed') stats.failed++;
-            else stats.pending++;
-        } catch (err) {
-            stats.errors.push(`[${order._id}] ${err.message}`);
-            console.error(`[FulfillmentCron] Error processing order ${order._id}:`, err.message);
+        if (order.retryCount >= MAX_RETRY_COUNT) {
+            exhausted.push(order);
+        } else {
+            healthy.push(order);
         }
     }
 
-    console.log(`[FulfillmentCron] Done. completed=${stats.completed} failed=${stats.failed} pending=${stats.pending} errors=${stats.errors.length}`);
+    if (exhausted.length) {
+        const now = new Date();
+        console.warn(
+            `[FulfillmentCron] Kill-switch: ${exhausted.length} order(s) exceeded ` +
+            `MAX_RETRY_COUNT (${MAX_RETRY_COUNT}) — moving to MANUAL_REVIEW.`
+        );
+
+        await Promise.all(exhausted.map(async (order) => {
+            try {
+                await Order.findByIdAndUpdate(order._id, {
+                    $set: {
+                        status: ORDER_STATUS.MANUAL_REVIEW,
+                        lastCheckedAt: now,
+                    },
+                });
+
+                createAuditLog({
+                    actorId:    order.userId,
+                    actorRole:  ACTOR_ROLES.SYSTEM,
+                    action:     PROVIDER_ACTIONS.RETRY_LIMIT_EXCEEDED,
+                    entityType: ENTITY_TYPES.ORDER,
+                    entityId:   order._id,
+                    metadata: {
+                        orderId:        order._id.toString(),
+                        providerOrderId: order.providerOrderId,
+                        providerCode:   order.providerCode,
+                        retryCount:     order.retryCount,
+                        maxRetryCount:  MAX_RETRY_COUNT,
+                        reason:         'PROVIDER_OFFLINE_OR_STUCK',
+                    },
+                });
+
+                stats.manualReview++;
+                console.warn(
+                    `[FulfillmentCron] Order ${order._id} (provider: ${order.providerCode}) ` +
+                    `→ MANUAL_REVIEW (retryCount=${order.retryCount})`
+                );
+            } catch (err) {
+                stats.errors.push(`[DLQ:${order._id}] ${err.message}`);
+                console.error(
+                    `[FulfillmentCron] Failed to move order ${order._id} to MANUAL_REVIEW:`,
+                    err.message
+                );
+            }
+        }));
+    }
+
+    // Bail early if every order was exhausted
+    if (!healthy.length) {
+        console.log(
+            `[FulfillmentCron] Done (all orders exhausted). ` +
+            `manualReview=${stats.manualReview} errors=${stats.errors.length}`
+        );
+        return stats;
+    }
+
+    stats.checked = healthy.length;
+    console.log(`[FulfillmentCron] Checking ${healthy.length} healthy PROCESSING order(s)…`);
+
+
+    // ── Helper: process results from a single provider batch ─────────────────
+    const _applyResults = async (orders, statusResults) => {
+        const resultMap = new Map(
+            statusResults.map((r) => [String(r.providerOrderId), r])
+        );
+
+        for (const order of orders) {
+            const statusResult = resultMap.get(String(order.providerOrderId));
+
+            if (!statusResult) {
+                // Provider didn't include this order  — skip this cycle
+                stats.pending++;
+                continue;
+            }
+
+            try {
+                const { action } = await processOrderStatusResult(order, statusResult);
+                if (action === 'completed') stats.completed++;
+                else if (action === 'failed') stats.failed++;
+                else stats.pending++;
+            } catch (err) {
+                stats.errors.push(`[${order._id}] ${err.message}`);
+                console.error(`[FulfillmentCron] Error processing order ${order._id}:`, err.message);
+                stats.pending++;
+            }
+        }
+    };
+
+    // ── Test / single-provider override ──────────────────────────────────────
+    if (providerOverride) {
+        const ids = healthy.map((o) => o.providerOrderId);
+        let statusResults = [];
+        try {
+            // Support both method names for test mocks
+            const batchFn = providerOverride.checkOrdersBatch ?? providerOverride.checkOrders;
+            statusResults = await batchFn.call(providerOverride, ids);
+        } catch (err) {
+            stats.errors.push(`Batch check failed: ${err.message}`);
+            console.error('[FulfillmentCron] checkOrders error (override):', err.message);
+            return stats;
+        }
+        await _applyResults(healthy, statusResults);
+        console.log(`[FulfillmentCron] Done (override). completed=${stats.completed} failed=${stats.failed} pending=${stats.pending}`);
+        return stats;
+    }
+
+    // ── Production: group by order.providerCode (snapshot, race-condition safe) ──
+    const groupsByCode = new Map();
+    for (const order of healthy) {
+        const code = String(order.providerCode || '').toLowerCase().trim() || '_unknown';
+        if (!groupsByCode.has(code)) groupsByCode.set(code, []);
+        groupsByCode.get(code).push(order);
+    }
+
+    for (const [code, orders] of groupsByCode) {
+        try {
+            // ── Resolve provider doc by slug snapshot (not by product) ────────
+            const { Provider } = require('../providers/provider.model');
+            const providerDoc = await Provider.findOne({
+                $or: [
+                    { slug: code },
+                    { name: { $regex: `^${_escapeRegex(code)}$`, $options: 'i' } },
+                ],
+                isActive: true,
+            });
+
+            if (!providerDoc) {
+                console.warn(
+                    `[FulfillmentCron] No active provider for code "${code}" —` +
+                    ` skipping ${orders.length} order(s). ` +
+                    `(Provider may have been deactivated or renamed.)`
+                );
+                orders.forEach(() => stats.pending++);
+                continue;
+            }
+
+            const adapter = getProviderAdapter(providerDoc);
+            const ids = orders.map((o) => o.providerOrderId);
+
+            // ── Call the provider batch-check endpoint ────────────────────────
+            let statusResults = [];
+            try {
+                // Adapters expose checkOrders(); base may also alias checkOrdersBatch()
+                const batchFn = adapter.checkOrders?.bind(adapter)
+                    ?? adapter.checkOrdersBatch?.bind(adapter);
+
+                if (!batchFn) {
+                    throw new Error(`Adapter for "${code}" has no checkOrders / checkOrdersBatch method.`);
+                }
+
+                statusResults = await batchFn(ids);
+            } catch (batchErr) {
+                // Classify: transient network / 5xx → leave PROCESSING, do NOT fail orders.
+                // Hard error (adapter bug, auth failure) → log as error.
+                const isTransient =
+                    batchErr.code === 'ECONNABORTED' ||
+                    batchErr.code === 'ETIMEDOUT'    ||
+                    batchErr.code === 'ECONNRESET'   ||
+                    (batchErr.response?.status ?? 0) >= 500 ||
+                    String(batchErr.message ?? '').toLowerCase().includes('timeout');
+
+                console[isTransient ? 'warn' : 'error'](
+                    `[FulfillmentCron] ${isTransient ? 'Transient error' : 'Error'} ` +
+                    `checking batch for "${code}" (${orders.length} orders):`,
+                    batchErr.message
+                );
+
+                // Leave all orders in this group PROCESSING  — cron will retry.
+                orders.forEach(() => stats.pending++);
+                stats.errors.push(`[${code}] ${batchErr.message}`);
+                continue;   // don't crash the loop for other providers
+            }
+
+            await _applyResults(orders, statusResults);
+
+        } catch (groupErr) {
+            // Unexpected crash (e.g. DB error) — log but keep going
+            console.error(`[FulfillmentCron] Group "${code}" crashed:`, groupErr.message);
+            orders.forEach(() => stats.errors.push(`[${code}] ${groupErr.message}`));
+        }
+    }
+
+    console.log(
+        `[FulfillmentCron] Done. ` +
+        `checked=${stats.checked} completed=${stats.completed} ` +
+        `failed=${stats.failed} pending=${stats.pending} ` +
+        `manualReview=${stats.manualReview} errors=${stats.errors.length}`
+    );
     return stats;
 };
 

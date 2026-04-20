@@ -399,6 +399,23 @@ const completeOrder = async (orderId, adminId) => {
 const updateOrderStatus = async (orderId, status, adminId, { rejectionReason } = {}) => {
     const normalised = String(status || '').trim().toLowerCase();
 
+    // ── Guard: block manual status changes on automatic orders ────────────
+    // Automatic orders are managed by the fulfillment engine. The ONLY
+    // automatic orders an admin may manually resolve are those the DLQ
+    // kill-switch has moved to MANUAL_REVIEW.
+    const order = await Order.findById(orderId).lean();
+    if (!order) throw new NotFoundError('Order');
+
+    if (
+        order.executionType === 'automatic' &&
+        order.status !== ORDER_STATUS.MANUAL_REVIEW
+    ) {
+        throw new BusinessRuleError(
+            'Cannot manually update automatic orders unless they are in MANUAL_REVIEW.',
+            'AUTOMATIC_ORDER_GUARD'
+        );
+    }
+
     if (['completed', 'approved'].includes(normalised)) {
         return completeOrder(orderId, adminId);
     }

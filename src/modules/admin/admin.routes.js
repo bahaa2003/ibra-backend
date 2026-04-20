@@ -159,7 +159,7 @@ router.post('/orders/:id/retry', ordersCtrl.retryOrder);
 router.post('/orders/:id/refund', ordersCtrl.refundOrder);
 router.post('/orders/:id/sync-status', ordersCtrl.syncOrderProviderStatus);
 router.post('/orders/:id/complete', ordersCtrl.completeOrder);
-router.patch('/orders/:id/status', ordersCtrl.updateStatus);
+router.patch('/orders/:id/status', validateBody(schemas.updateOrderStatus), ordersCtrl.updateStatus);
 router.get('/orders/:id', ordersCtrl.getOrderById);
 
 // ═══════════════════════════════════════════════════════════════════════════════

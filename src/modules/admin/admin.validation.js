@@ -151,11 +151,23 @@ const updateProviderSchema = Joi.object({
 
 const listOrdersQuery = Joi.object({
     ...pagination,
-    status: Joi.string().valid('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED'),
+    status: Joi.string().valid('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELED', 'PARTIAL', 'MANUAL_REVIEW'),
     userId: objectId(),
     providerId: objectId(),
     from: Joi.date().iso(),
     to: Joi.date().iso().min(Joi.ref('from')),
+});
+
+const updateOrderStatusSchema = Joi.object({
+    status: Joi.string()
+        .valid('completed', 'approved', 'failed', 'rejected', 'denied', 'refunded', 'cancelled', 'canceled', 'processing', 'retry', 'pending',
+               'COMPLETED', 'APPROVED', 'FAILED', 'REJECTED', 'DENIED', 'REFUNDED', 'CANCELLED', 'CANCELED', 'PROCESSING', 'RETRY', 'PENDING')
+        .required()
+        .messages({
+            'any.required': 'status is required',
+            'any.only': 'Invalid target status. Use: completed, rejected, failed, processing.',
+        }),
+    rejectionReason: Joi.string().trim().max(500).optional().allow('', null),
 });
 
 // ─── Wallet schemas ───────────────────────────────────────────────────────────
@@ -302,6 +314,7 @@ module.exports = {
         updateProvider: updateProviderSchema,
         // Orders
         listOrdersQuery,
+        updateOrderStatus: updateOrderStatusSchema,
         // Wallet
         walletAdjustment: walletAdjustmentSchema,
         walletSetBalance: walletSetBalanceSchema,

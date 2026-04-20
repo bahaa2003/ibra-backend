@@ -169,7 +169,7 @@ const refundWalletAtomic = async ({
     const transaction = await _createTransactionRecord({
         userId,
         type: TRANSACTION_TYPES.REFUND,
-        amount: totalRefund,
+        amount: walletDeducted,
         balanceBefore: oldUser.walletBalance,
         balanceAfter: oldUser.walletBalance + walletDeducted,
         reference,
