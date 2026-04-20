@@ -127,6 +127,56 @@ const debitWalletAtomic = async ({ userId, amount, reference = null, description
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PART 1b — FORCED DEBIT (admin override, bypasses balance guard)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Unconditionally debit a user's wallet — no balance or status check.
+ *
+ * ADMIN OVERRIDE ONLY. Used when an admin force-completes an order that was
+ * previously refunded (e.g., provider executed the order despite a timeout).
+ * Balance MAY go negative — this is intentional (debt).
+ *
+ * @param {Object} params
+ * @param {string|ObjectId} params.userId
+ * @param {number}          params.amount      - exact amount to deduct
+ * @param {string|null}     params.reference   - orderId
+ * @param {string}          params.description
+ * @param {ClientSession}   [params.session]
+ * @returns {{ transaction: WalletTransaction }}
+ */
+const forcedDebitWallet = async ({ userId, amount, reference = null, description = '', session }) => {
+    if (amount <= 0) {
+        throw new BusinessRuleError('Debit amount must be greater than zero.', 'INVALID_AMOUNT');
+    }
+
+    const user = session
+        ? await User.findById(userId).session(session)
+        : await User.findById(userId);
+    if (!user) throw new NotFoundError('User');
+
+    const balanceBefore = user.walletBalance ?? 0;
+    const balanceAfter  = parseFloat((balanceBefore - amount).toFixed(2));
+
+    // $inc is unconditional — works even when balance is already negative
+    const updateOpts = session ? { session } : {};
+    await User.updateOne({ _id: userId }, { $inc: { walletBalance: -amount } }, updateOpts);
+
+    const transaction = await _createTransactionRecord({
+        userId,
+        type: TRANSACTION_TYPES.DEBIT,
+        amount,
+        balanceBefore,
+        balanceAfter,
+        reference,
+        description,
+        session,
+    });
+
+    return { transaction };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PART 2 — ATOMIC REFUND
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -247,4 +297,4 @@ const getTransactionHistory = async (userId, { page = 1, limit = 20 } = {}) => {
     };
 };
 
-module.exports = { debitWalletAtomic, refundWalletAtomic, creditWalletDirect, getTransactionHistory };
+module.exports = { debitWalletAtomic, forcedDebitWallet, refundWalletAtomic, creditWalletDirect, getTransactionHistory };

@@ -9,6 +9,7 @@
 const mongoose = require('mongoose');
 const { Order, ORDER_STATUS } = require('../orders/order.model');
 const { markOrderAsFailed, processOrderRefund } = require('../orders/order.service');
+const { forcedDebitWallet } = require('../wallet/wallet.service');
 const { getProviderAdapter } = require('../providers/adapters/adapter.factory');
 const { Provider } = require('../providers/provider.model');
 const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppError');
@@ -334,29 +335,41 @@ const completeOrder = async (orderId, adminId) => {
     const order = await Order.findById(orderId);
     if (!order) throw new NotFoundError('Order');
 
+    // Hard stop — already completed, nothing to do
     if (order.status === ORDER_STATUS.COMPLETED) {
         throw new BusinessRuleError('Order is already completed.', 'ALREADY_COMPLETED');
     }
-    if (order.status === ORDER_STATUS.FAILED) {
-        throw new BusinessRuleError(
-            'Cannot complete a failed/refunded order. Create a new order instead.',
-            'ORDER_ALREADY_FAILED'
-        );
-    }
-    if (order.status === ORDER_STATUS.CANCELED) {
-        throw new BusinessRuleError(
-            'Cannot complete a canceled order. Create a new order instead.',
-            'ORDER_ALREADY_CANCELED'
-        );
-    }
-    if (order.status === ORDER_STATUS.PARTIAL) {
-        throw new BusinessRuleError(
-            'Cannot complete a partially-refunded order. Create a new order instead.',
-            'ORDER_ALREADY_PARTIAL'
-        );
-    }
 
     const before = order.status;
+
+    // ── Forced-completion path ────────────────────────────────────────────
+    // If the order was previously refunded (FAILED / PARTIAL / CANCELED),
+    // the user has already received their money back. The admin is explicitly
+    // overriding — we must re-deduct the original amount unconditionally,
+    // even if it drives the wallet into debt.
+    const wasRefunded = order.refunded === true ||
+        [ORDER_STATUS.FAILED, ORDER_STATUS.PARTIAL, ORDER_STATUS.CANCELED].includes(order.status);
+
+    if (wasRefunded) {
+        // Determine the exact amount to re-deduct:
+        //   chargedAmount is the total the user originally paid.
+        //   Fall back to walletDeducted for legacy orders.
+        const reDeductAmount = Number(order.chargedAmount || order.walletDeducted || 0);
+
+        if (reDeductAmount > 0) {
+            await forcedDebitWallet({
+                userId: order.userId,
+                amount: reDeductAmount,
+                reference: order._id,
+                description: `Admin forced completion re-deduction for order #${order.orderNumber || order._id} (previously refunded ${reDeductAmount} ${order.currency || 'USD'})`,
+            });
+        }
+
+        // Clear the refund flags so the order is in a clean completed state
+        order.refunded    = false;
+        order.refundedAt  = null;
+    }
+
     order.status = ORDER_STATUS.COMPLETED;
     await order.save();
 
@@ -367,9 +380,10 @@ const completeOrder = async (orderId, adminId) => {
         entityType: ENTITY_TYPES.ORDER,
         entityId: order._id,
         metadata: {
-            action: 'manual_complete',
+            action: wasRefunded ? 'forced_complete_with_rededuction' : 'manual_complete',
             previousStatus: before,
             newStatus: ORDER_STATUS.COMPLETED,
+            reDeducted: wasRefunded,
         },
     });
 
@@ -398,23 +412,6 @@ const completeOrder = async (orderId, adminId) => {
  */
 const updateOrderStatus = async (orderId, status, adminId, { rejectionReason } = {}) => {
     const normalised = String(status || '').trim().toLowerCase();
-
-    // ── Guard: block manual status changes on automatic orders ────────────
-    // Automatic orders are managed by the fulfillment engine. The ONLY
-    // automatic orders an admin may manually resolve are those the DLQ
-    // kill-switch has moved to MANUAL_REVIEW.
-    const order = await Order.findById(orderId).lean();
-    if (!order) throw new NotFoundError('Order');
-
-    if (
-        order.executionType === 'automatic' &&
-        order.status !== ORDER_STATUS.MANUAL_REVIEW
-    ) {
-        throw new BusinessRuleError(
-            'Cannot manually update automatic orders unless they are in MANUAL_REVIEW.',
-            'AUTOMATIC_ORDER_GUARD'
-        );
-    }
 
     if (['completed', 'approved'].includes(normalised)) {
         return completeOrder(orderId, adminId);
