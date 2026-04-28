@@ -309,11 +309,13 @@ const _attemptCreateOrder = async (
             );
         }
 
+        const orderId = new mongoose.Types.ObjectId();
+
         // ── 4. Atomic Debit (in user currency) ────────────────────────────────
         const { walletDeducted, creditUsedAmount } = await debitWalletAtomic({
             userId,
             amount: chargedAmount,     // ← wallet always in user currency
-            reference: null,
+            reference: orderId,
             description: `Payment for: ${product.name} x${qty}`,
             session,
         });
@@ -326,6 +328,7 @@ const _attemptCreateOrder = async (
 
         // ── 6. Create Order ────────────────────────────────────────────────────
         const orderData = {
+            _id: orderId,
             userId,
             productId: product._id,
             orderNumber,

@@ -54,11 +54,19 @@ const listUsers = async ({
     to,
     page = 1,
     limit = 20,
-    sortBy = 'createdAt',
+    sortBy = 'walletBalance',
     sortOrder = 'desc',
 } = {}) => {
-    limit = Math.min(limit, 100);  // hard cap
-    const skip = (page - 1) * limit;
+    const normalizedPage = Number.isFinite(Number(page)) && Number(page) > 0
+        ? Math.floor(Number(page))
+        : 1;
+    const requestedLimit = Number.isFinite(Number(limit)) && Number(limit) > 0
+        ? Math.floor(Number(limit))
+        : 20;
+    const normalizedLimit = Math.min(requestedLimit, 20); // strict max for admin users page
+    const skip = (normalizedPage - 1) * normalizedLimit;
+    const normalizedSortBy = typeof sortBy === 'string' && sortBy.trim() ? sortBy.trim() : 'walletBalance';
+    const normalizedSortOrder = String(sortOrder || '').trim().toLowerCase() === 'asc' ? 'asc' : 'desc';
 
     const filter = { deletedAt: null, verified: true };
     if (status) filter.status = status;
@@ -71,7 +79,9 @@ const listUsers = async ({
         if (to) filter.createdAt.$lte = new Date(to);
     }
 
-    const sort = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
+    const sort = normalizedSortBy === 'walletBalance'
+        ? { walletBalance: normalizedSortOrder === 'asc' ? 1 : -1 }
+        : { [normalizedSortBy]: normalizedSortOrder === 'asc' ? 1 : -1 };
 
     const [users, total] = await Promise.all([
         User.find(filter)
@@ -79,13 +89,18 @@ const listUsers = async ({
             .populate('groupId', 'name percentage')
             .sort(sort)
             .skip(skip)
-            .limit(limit),
+            .limit(normalizedLimit),
         User.countDocuments(filter),
     ]);
 
     return {
         users,
-        pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+        pagination: {
+            page: normalizedPage,
+            limit: normalizedLimit,
+            total,
+            pages: Math.ceil(total / normalizedLimit),
+        },
     };
 };
 

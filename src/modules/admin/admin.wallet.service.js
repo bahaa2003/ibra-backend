@@ -51,7 +51,15 @@ const getWallet = async (userId) => {
     const user = await User.findById(userId)
         .select('name email walletBalance creditLimit creditUsed currency status');
     if (!user) throw new NotFoundError('User');
-    return user;
+
+    // Fetch recent transactions WITH populated references so the frontend
+    // store is never overwritten with unpopulated/missing transaction data.
+    const recentTransactions = await WalletTransaction.find({ userId })
+        .sort({ createdAt: -1 })
+        .limit(20)
+        .populate('reference', 'orderNumber customerInput status totalPrice');
+
+    return { user, recentTransactions };
 };
 
 // ─── Transaction history ───────────────────────────────────────────────────────
@@ -68,7 +76,7 @@ const getTransactionHistory = async (userId, { page = 1, limit = 20 } = {}) => {
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit)
-            .populate('reference', 'status totalPrice'),
+            .populate('reference', 'orderNumber customerInput status totalPrice'),
         WalletTransaction.countDocuments({ userId }),
     ]);
 

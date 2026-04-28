@@ -13,6 +13,8 @@ const { sendSuccess, sendCreated, sendPaginated } = require('../../shared/utils/
 // GET /admin/users
 const listUsers = catchAsync(async (req, res) => {
     const { status, verified, email, role, from, to, page, limit, sortBy, sortOrder } = req.query;
+    const normalizedSortBy = typeof sortBy === 'string' && sortBy.trim() ? sortBy.trim() : 'walletBalance';
+    const normalizedSortOrder = String(sortOrder || '').trim().toLowerCase() === 'asc' ? 'asc' : 'desc';
     const result = await svc.listUsers({
         status,
         verified: verified !== undefined ? verified === 'true' : undefined,
@@ -22,8 +24,8 @@ const listUsers = catchAsync(async (req, res) => {
         to,
         page: parseInt(page ?? 1, 10),
         limit: parseInt(limit ?? 20, 10),
-        sortBy,
-        sortOrder,
+        sortBy: normalizedSortBy,
+        sortOrder: normalizedSortOrder,
     });
     sendPaginated(res, result.users, result.pagination, 'Users retrieved');
 });

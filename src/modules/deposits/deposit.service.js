@@ -22,7 +22,7 @@ const { DEPOSIT_ACTIONS, WALLET_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('
  *
  * Business rules:
  *   - User must exist and be ACTIVE (enforced upstream by requireActiveUser middleware).
- *   - No duplicate check — a user may have multiple PENDING requests.
+ *   - A user may NOT have more than one PENDING deposit at a time.
  *   - requestedAmount must be > 0 (enforced by schema).
  *   - amountUsd is pre-calculated by the controller using the frozen exchangeRate.
  *   - No wallet credit at this stage; the request is PENDING until admin review.
@@ -56,6 +56,18 @@ const createDepositRequest = async ({
     // Confirm user exists (belt-and-suspenders — middleware already checks ACTIVE)
     const user = await User.findById(userId).select('_id role');
     if (!user) throw new NotFoundError('User');
+
+    // ── Guard: prevent duplicate pending deposits ────────────────────────
+    const existingPending = await DepositRequest.findOne({
+        userId,
+        status: DEPOSIT_STATUS.PENDING,
+    });
+    if (existingPending) {
+        throw new BusinessRuleError(
+            'You already have a pending deposit request. Please wait for it to be processed.',
+            'DUPLICATE_PENDING_DEPOSIT'
+        );
+    }
 
     const deposit = await DepositRequest.create({
         userId,

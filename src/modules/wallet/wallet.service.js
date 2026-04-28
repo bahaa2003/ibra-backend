@@ -106,8 +106,8 @@ const debitWalletAtomic = async ({ userId, amount, reference = null, description
     }
 
     // Calculate how much was drawn from wallet vs credit
-    const oldBalance = oldUser.walletBalance || 0;
-    const newBalance = oldBalance - amount;
+    const oldBalance = Number(oldUser.walletBalance) || 0;
+    const newBalance = Number((oldBalance - amount).toFixed(2));
     const walletPortion = Math.min(amount, Math.max(0, oldBalance)); // actual wallet funds used
     const creditPortion = amount - walletPortion; // remainder came from credit line
 
@@ -155,7 +155,7 @@ const forcedDebitWallet = async ({ userId, amount, reference = null, description
         : await User.findById(userId);
     if (!user) throw new NotFoundError('User');
 
-    const balanceBefore = user.walletBalance ?? 0;
+    const balanceBefore = Number(user.walletBalance) || 0;
     const balanceAfter  = parseFloat((balanceBefore - amount).toFixed(2));
 
     // $inc is unconditional — works even when balance is already negative
@@ -216,12 +216,14 @@ const refundWalletAtomic = async ({
 
     if (!oldUser) throw new NotFoundError('User');
 
+    const oldBal = Number(oldUser.walletBalance) || 0;
+
     const transaction = await _createTransactionRecord({
         userId,
         type: TRANSACTION_TYPES.REFUND,
         amount: walletDeducted,
-        balanceBefore: oldUser.walletBalance,
-        balanceAfter: oldUser.walletBalance + walletDeducted,
+        balanceBefore: oldBal,
+        balanceAfter: Number((oldBal + walletDeducted).toFixed(2)),
         reference,
         description,
         session,
@@ -253,12 +255,14 @@ const creditWalletDirect = async ({ userId, amount, reference = null, descriptio
 
     if (!oldUser) throw new NotFoundError('User');
 
+    const oldBal = Number(oldUser.walletBalance) || 0;
+
     const transaction = await _createTransactionRecord({
         userId,
         type: TRANSACTION_TYPES.CREDIT,
         amount,
-        balanceBefore: oldUser.walletBalance,
-        balanceAfter: oldUser.walletBalance + amount,
+        balanceBefore: oldBal,
+        balanceAfter: Number((oldBal + amount).toFixed(2)),
         reference,
         description,
         session,
@@ -282,7 +286,7 @@ const getTransactionHistory = async (userId, { page = 1, limit = 20 } = {}) => {
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit)
-            .populate('reference', 'status totalPrice'),
+            .populate('reference', 'orderNumber customerInput status totalPrice'),
         WalletTransaction.countDocuments({ userId }),
     ]);
 

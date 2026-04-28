@@ -23,6 +23,7 @@ const { ADMIN_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.con
  * @param {string}  [opts.status]
  * @param {string}  [opts.userId]
  * @param {string}  [opts.providerId]  - filter by provider on the linked product
+ * @param {string}  [opts.search]      - free-text search (orderNumber, _id, playerID)
  * @param {Date}    [opts.from]
  * @param {Date}    [opts.to]
  * @param {number}  [opts.page]
@@ -32,6 +33,7 @@ const listOrders = async ({
     status,
     userId,
     providerId,
+    search,
     from,
     to,
     page = 1,
@@ -40,28 +42,57 @@ const listOrders = async ({
     limit = Math.min(limit, 500);
     const skip = (page - 1) * limit;
 
-    const filter = {};
-    if (status) filter.status = status;
-    if (userId) filter.userId = new mongoose.Types.ObjectId(userId);
+    // 1. Single queryFilter — every condition goes directly onto this object.
+    const queryFilter = {};
+    if (status) queryFilter.status = status;
+    if (userId) queryFilter.userId = new mongoose.Types.ObjectId(userId);
     if (from || to) {
-        filter.createdAt = {};
-        if (from) filter.createdAt.$gte = new Date(from);
-        if (to) filter.createdAt.$lte = new Date(to);
+        queryFilter.createdAt = {};
+        if (from) queryFilter.createdAt.$gte = new Date(from);
+        if (to) queryFilter.createdAt.$lte = new Date(to);
     }
 
-    // providerId filter requires a pipeline-style query on the product's provider field
-    // We keep it simple: aggregate via populate + post-filter for now.
-    // For very large datasets this should be replaced with an aggregation pipeline.
+    // 2. Search conditions — appended as queryFilter.$or
+    if (search && String(search).trim()) {
+        const s = String(search).trim();
+        const searchRegex = new RegExp(s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&'), 'i');
 
-    const [orders, total] = await Promise.all([
-        Order.find(filter)
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit)
-            .populate('productId', 'name basePrice executionType provider')
-            .populate('userId', 'name email'),
-        Order.countDocuments(filter),
-    ]);
+        const orConditions = [
+            { 'customerInput.values.playerId': searchRegex },
+            { 'customerInput.values.player_id': searchRegex },
+            { 'customerInput.values.uid': searchRegex },
+            { 'customerInput.values.userId': searchRegex },
+            { 'customerInput.values.username': searchRegex },
+            { providerOrderId: searchRegex },
+        ];
+
+        // Safe ObjectId match
+        if (s.length === 24 && /^[a-f\d]{24}$/i.test(s)) {
+            orConditions.push({ _id: s });
+        }
+
+        // Partial number match for orderNumber (stored as Number)
+        orConditions.push({
+            $expr: {
+                $regexMatch: {
+                    input: { $toString: '$orderNumber' },
+                    regex: s,
+                    options: 'i',
+                },
+            },
+        });
+
+        queryFilter.$or = orConditions;
+    }
+
+    // 3. CRITICAL: Pass the EXACT SAME queryFilter to BOTH countDocuments and find.
+    const total = await Order.countDocuments(queryFilter);
+    const orders = await Order.find(queryFilter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('productId', 'name basePrice executionType provider')
+        .populate('userId', 'name email');
 
     return { orders, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
 };

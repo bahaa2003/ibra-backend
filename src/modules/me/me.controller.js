@@ -63,6 +63,7 @@ const getWallet = catchAsync(async (req, res) => {
     const recent = await WalletTransaction.find({ userId: req.user._id })
         .sort({ createdAt: -1 })
         .limit(5)
+        .populate('reference', 'orderNumber customerInput status totalPrice')
         .lean();
 
     sendSuccess(res, {
@@ -93,7 +94,8 @@ const getTransactions = catchAsync(async (req, res) => {
 
     const skip = (page - 1) * limit;
     const [transactions, total] = await Promise.all([
-        WalletTransaction.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+        WalletTransaction.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit)
+            .populate('reference', 'orderNumber customerInput status totalPrice').lean(),
         WalletTransaction.countDocuments(filter),
     ]);
 

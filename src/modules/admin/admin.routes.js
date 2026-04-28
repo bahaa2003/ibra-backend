@@ -110,6 +110,7 @@ router.use(authorize('ADMIN'));
 // DASHBOARD STATISTICS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+router.get('/dashboard/stats', statsCtrl.getDashboardStats);
 router.get('/stats', statsCtrl.getDashboardStats);
 
 // ═══════════════════════════════════════════════════════════════════════════════

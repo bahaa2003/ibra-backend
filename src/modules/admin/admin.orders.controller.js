@@ -10,11 +10,12 @@ const { sendSuccess, sendPaginated } = require('../../shared/utils/apiResponse')
 
 // GET /admin/orders
 const listOrders = catchAsync(async (req, res) => {
-    const { status, userId, providerId, from, to, page, limit } = req.query;
+    const { status, userId, providerId, search, from, to, page, limit } = req.query;
     const result = await svc.listOrders({
         status,
         userId,
         providerId,
+        search,
         from,
         to,
         page: parseInt(page ?? 1, 10),

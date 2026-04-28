@@ -154,6 +154,7 @@ const listOrdersQuery = Joi.object({
     status: Joi.string().valid('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELED', 'PARTIAL', 'MANUAL_REVIEW'),
     userId: objectId(),
     providerId: objectId(),
+    search: Joi.string().allow('', null).optional(), // <--- البطل اللي هينقذ الموقف
     from: Joi.date().iso(),
     to: Joi.date().iso().min(Joi.ref('from')),
 });
