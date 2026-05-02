@@ -58,6 +58,11 @@ const registry = new Map([
     ['alkasr vip', AlkasrVipAdapter],  // display name
     ['alkasrvip', AlkasrVipAdapter],  // compact
 
+    // ── Miral Store (Uses Alkasr Adapter) ─────────────────────────────────────
+    ['miral-store', AlkasrVipAdapter], // slug
+    ['miral store', AlkasrVipAdapter], // name
+    ['miralstore', AlkasrVipAdapter],  // compact
+
     // ── Default test / dev adapter ────────────────────────────────────────────
     ['mock', MockProviderAdapter],
 ]);
