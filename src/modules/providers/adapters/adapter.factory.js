@@ -63,6 +63,12 @@ const registry = new Map([
     ['miral store', AlkasrVipAdapter], // name
     ['miralstore', AlkasrVipAdapter],  // compact
 
+    // ── koronastore ──────────────────────────────────────────────────────────
+    ['korona-store', RoyalCrownAdapter],   // slug
+    ['korona store', RoyalCrownAdapter],   // name (lowercase)
+    ['koronastore', RoyalCrownAdapter],   // compact variant
+
+
     // ── Default test / dev adapter ────────────────────────────────────────────
     ['mock', MockProviderAdapter],
 ]);
