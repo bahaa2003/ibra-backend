@@ -12,13 +12,14 @@ const { sendSuccess, sendCreated, sendPaginated } = require('../../shared/utils/
 
 // GET /admin/users
 const listUsers = catchAsync(async (req, res) => {
-    const { status, verified, email, role, from, to, page, limit, sortBy, sortOrder } = req.query;
+    const { status, verified, email, search, role, from, to, page, limit, sortBy, sortOrder } = req.query;
     const normalizedSortBy = typeof sortBy === 'string' && sortBy.trim() ? sortBy.trim() : 'walletBalance';
     const normalizedSortOrder = String(sortOrder || '').trim().toLowerCase() === 'asc' ? 'asc' : 'desc';
     const result = await svc.listUsers({
         status,
         verified: verified !== undefined ? verified === 'true' : undefined,
         email,
+        search,
         role,
         from,
         to,
@@ -38,11 +39,12 @@ const getUserById = catchAsync(async (req, res) => {
 
 // GET /admin/supervisors
 const listSupervisors = catchAsync(async (req, res) => {
-    const { status, verified, email, from, to, page, limit, sortBy, sortOrder } = req.query;
+    const { status, verified, email, search, from, to, page, limit, sortBy, sortOrder } = req.query;
     const result = await svc.listSupervisors({
         status,
         verified: verified !== undefined ? verified === 'true' : undefined,
         email,
+        search,
         from,
         to,
         page: parseInt(page ?? 1, 10),

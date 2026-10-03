@@ -24,6 +24,9 @@
 
 const { Product, PRICING_MODES, MARKUP_TYPES, computeFinalPrice } = require('./product.model');
 const { ProviderProduct } = require('../providers/providerProduct.model');
+const { Provider } = require('../providers/provider.model');
+const mongoose = require('mongoose');
+const { escapeRegex } = require('../../shared/utils/escapeRegex');
 const { isPositive, add } = require('../../shared/utils/decimalPrecision');
 const {
     NotFoundError,
@@ -41,9 +44,30 @@ const {
  * Public-facing product list. Returns only active products for customers;
  * admins pass activeOnly=false to see everything.
  */
-const listProducts = async ({ activeOnly = true, page = 1, limit = 50 } = {}) => {
+const listProducts = async ({ activeOnly = true, page = 1, limit = 50, search, category } = {}) => {
     const filter = { deletedAt: null };
     if (activeOnly) filter.isActive = true;
+    const normalizedCategory = String(category ?? '').trim();
+    if (normalizedCategory) filter.category = normalizedCategory;
+
+    const normalizedSearch = String(search ?? '').trim();
+    if (normalizedSearch) {
+        const regex = new RegExp(escapeRegex(normalizedSearch), 'i');
+        const [matchingProviders, matchingProviderProducts] = await Promise.all([
+            Provider.find({ $or: [{ name: regex }, { slug: regex }] }).select('_id').lean(),
+            ProviderProduct.find({ $or: [{ rawName: regex }, { translatedName: regex }, { externalProductId: regex }] }).select('_id').lean(),
+        ]);
+        filter.$or = [
+            { name: regex },
+            { description: regex },
+            { category: regex },
+        ];
+        if (matchingProviders.length) filter.$or.push({ provider: { $in: matchingProviders.map((provider) => provider._id) } });
+        if (matchingProviderProducts.length) filter.$or.push({ providerProduct: { $in: matchingProviderProducts.map((product) => product._id) } });
+        if (mongoose.isValidObjectId(normalizedSearch)) {
+            filter.$or.push({ _id: new mongoose.Types.ObjectId(normalizedSearch) });
+        }
+    }
     const skip = (page - 1) * limit;
 
     const [products, total] = await Promise.all([
@@ -564,4 +588,3 @@ module.exports = {
     createProductFromProvider: publishFromProviderProduct,  // prompt-specified name
     toggleProduct: toggleProductStatus,                     // prompt-specified name
 };
-

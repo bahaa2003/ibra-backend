@@ -57,8 +57,9 @@ const listProducts = catchAsync(async (req, res) => {
     const activeOnly = !isAdmin;
     const page = parseInt(req.query.page, 10) || 1;
     const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    const { search, category } = req.query;
 
-    const { products, pagination } = await productService.listProducts({ activeOnly, page, limit });
+    const { products, pagination } = await productService.listProducts({ activeOnly, page, limit, search, category });
 
     // Apply group markup for non-admin users
     if (activeOnly && req.user.groupId) {

@@ -60,6 +60,7 @@ router.get(
     '/products',
     [
         query('search').optional().isString().trim(),
+        query('category').optional().isString().trim().isLength({ max: 128 }),
         query('page').optional().isInt({ min: 1 }),
         query('limit').optional().isInt({ min: 1, max: 100 }),
     ],
@@ -86,7 +87,19 @@ const createOrderValidation = [
 ];
 
 router.post('/orders', createOrderValidation, validate, me.placeOrder);
-router.get('/orders', me.getOrders);
+router.get(
+    '/orders',
+    [
+        query('page').optional().isInt({ min: 1 }),
+        query('limit').optional().isInt({ min: 1, max: 100 }),
+        query('search').optional().isString().trim().isLength({ max: 200 }),
+        query('status').optional().isString().trim(),
+        query('from').optional().isISO8601(),
+        query('to').optional().isISO8601(),
+    ],
+    validate,
+    me.getOrders
+);
 router.get(
     '/orders/:id',
     [param('id').isMongoId().withMessage('Invalid order ID')],

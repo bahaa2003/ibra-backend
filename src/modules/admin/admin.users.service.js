@@ -11,7 +11,9 @@
  */
 
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 const { User, USER_STATUS, ROLES } = require('../users/user.model');
+const { escapeRegex } = require('../../shared/utils/escapeRegex');
 const { NotFoundError, ConflictError, BusinessRuleError } = require('../../shared/errors/AppError');
 const { createAuditLog } = require('../audit/audit.service');
 const {
@@ -61,6 +63,7 @@ const _sanitizeUserSnapshot = (snapshot) => {
  * @param {string}  [opts.status]    - 'PENDING' | 'ACTIVE' | 'REJECTED'
  * @param {boolean} [opts.verified]  - filter by email verification flag
  * @param {string}  [opts.email]     - partial email search (case-insensitive)
+ * @param {string}  [opts.search]    - name, email, or exact ObjectId search
  * @param {string}  [opts.role]      - 'ADMIN' | 'SUPERVISOR' | 'CUSTOMER'
  * @param {Date}    [opts.from]      - createdAt >= from
  * @param {Date}    [opts.to]        - createdAt <= to
@@ -73,6 +76,7 @@ const listUsers = async ({
     status,
     verified,
     email,
+    search,
     role,
     from,
     to,
@@ -96,7 +100,15 @@ const listUsers = async ({
     if (status) filter.status = status;
     if (verified != null) filter.verified = verified;
     if (role) filter.role = role;
-    if (email) filter.email = { $regex: email, $options: 'i' };
+    if (email) filter.email = { $regex: escapeRegex(String(email).trim()), $options: 'i' };
+    const normalizedSearch = String(search ?? '').trim();
+    if (normalizedSearch) {
+        const regex = new RegExp(escapeRegex(normalizedSearch), 'i');
+        filter.$or = [{ name: regex }, { email: regex }];
+        if (mongoose.isValidObjectId(normalizedSearch)) {
+            filter.$or.push({ _id: new mongoose.Types.ObjectId(normalizedSearch) });
+        }
+    }
     if (from || to) {
         filter.createdAt = {};
         if (from) filter.createdAt.$gte = new Date(from);

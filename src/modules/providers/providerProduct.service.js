@@ -16,6 +16,7 @@
 
 const { ProviderProduct } = require('./providerProduct.model');
 const { NotFoundError } = require('../../shared/errors/AppError');
+const { escapeRegex } = require('../../shared/utils/escapeRegex');
 
 // =============================================================================
 // LIST / SEARCH
@@ -36,9 +37,10 @@ const { NotFoundError } = require('../../shared/errors/AppError');
 const listProviderProducts = async (filter = {}, { page = 1, limit = 500, search } = {}) => {
     const query = { ...filter };
 
-    if (search) {
-        const re = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-        query.$or = [{ rawName: re }, { translatedName: re }];
+    const normalizedSearch = String(search ?? '').trim();
+    if (normalizedSearch) {
+        const re = new RegExp(escapeRegex(normalizedSearch), 'i');
+        query.$or = [{ rawName: re }, { translatedName: re }, { externalProductId: re }];
     }
 
     const skip = (page - 1) * limit;

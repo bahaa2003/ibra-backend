@@ -17,6 +17,7 @@
 const mongoose = require('mongoose');
 const { sendSuccess, sendCreated, sendPaginated } = require('../../shared/utils/apiResponse');
 const catchAsync = require('../../shared/utils/catchAsync');
+const { escapeRegex } = require('../../shared/utils/escapeRegex');
 
 const catalogService = require('../providers/providerCatalog.service');
 const providerService = require('../providers/provider.service');
@@ -309,14 +310,14 @@ const listAllProviderProducts = catchAsync(async (req, res) => {
  * Query: ?search= &page= &limit= &includeInactive=
  */
 const listProviderProducts = catchAsync(async (req, res) => {
-    const { search, page = 1, limit = 600, includeInactive } = req.query;
+    const { search, page = 1, limit = 50, includeInactive } = req.query;
 
     const filter = { provider: req.params.providerId };
     if (!includeInactive || includeInactive === 'false') filter.isActive = true;
 
     const { products, pagination } = await ppService.listProviderProducts(filter, {
         page: parseInt(page, 10),
-        limit: Math.min(parseInt(limit, 10), 1000),
+        limit: Math.min(parseInt(limit, 10), 200),
         search,
     });
 
@@ -369,7 +370,7 @@ const listProductProviderOptions = catchAsync(async (req, res) => {
  * Does not return provider prices, raw payloads, external IDs, or internal mapping data.
  */
 const listProductProviderProductOptions = catchAsync(async (req, res) => {
-    const { search = '', page = 1, limit = 600 } = req.query;
+    const { search = '', page = 1, limit = 50 } = req.query;
     const { providerId } = req.params;
 
     if (!isValidObjectId(providerId)) {
@@ -378,12 +379,11 @@ const listProductProviderProductOptions = catchAsync(async (req, res) => {
 
     const filter = { provider: providerId, isActive: true };
     if (search) {
-        const escapedSearch = String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const re = new RegExp(escapedSearch, 'i');
+        const re = new RegExp(escapeRegex(String(search).trim()), 'i');
         filter.$or = [{ rawName: re }, { translatedName: re }];
     }
 
-    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 600, 1), 1000);
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
     const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
     const skip = (parsedPage - 1) * parsedLimit;
 
@@ -428,11 +428,13 @@ const setTranslatedName = catchAsync(async (req, res) => {
  * Query: ?page= &limit= &search= &category=
  */
 const listProducts = catchAsync(async (req, res) => {
-    const { page = 1, limit = 50 } = req.query;
+    const { page = 1, limit = 50, search, category } = req.query;
     const { products, pagination } = await productService.listProducts({
         activeOnly: false,
         page: parseInt(page, 10),
         limit: Math.min(parseInt(limit, 10), 200),
+        search,
+        category,
     });
     sendPaginated(res, sanitizeAdminProductResponse(products, req.user), pagination, 'Products retrieved.');
 });

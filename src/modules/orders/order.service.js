@@ -32,6 +32,7 @@ const {
 } = require('../notifications/notification.events');
 const { getLivePrice, invalidate: invalidatePriceCache } = require('../providers/providerPriceCache');
 const { toDecimal, toStr, toFiat, multiply, subtract, add, isPositive, compare } = require('../../shared/utils/decimalPrecision');
+const { escapeRegex } = require('../../shared/utils/escapeRegex');
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // JIT PRICE AUTO-UPDATE HELPER
@@ -837,15 +838,72 @@ const markOrderAsCompleted = async (orderId) => {
 // QUERIES
 // -----------------------------------------------------------------------------
 
-const listOrdersForUser = async (userId, { page = 1, limit = 20 } = {}) => {
+const listOrdersForUser = async (userId, {
+    page = 1,
+    limit = 20,
+    search,
+    status,
+    from,
+    to,
+} = {}) => {
     const skip = (page - 1) * limit;
+    const filter = { userId };
+    const normalizedStatus = String(status ?? '').trim().toLowerCase();
+    const customerStatusGroups = {
+        processing: [ORDER_STATUS.PENDING, ORDER_STATUS.PROCESSING],
+        completed: [ORDER_STATUS.COMPLETED],
+        incomplete: [ORDER_STATUS.FAILED, ORDER_STATUS.CANCELED, ORDER_STATUS.PARTIAL],
+        manual_review: [ORDER_STATUS.MANUAL_REVIEW],
+    };
+    if (normalizedStatus && normalizedStatus !== 'all') {
+        const statuses = customerStatusGroups[normalizedStatus] || [normalizedStatus.toUpperCase()];
+        filter.status = statuses.length === 1 ? statuses[0] : { $in: statuses };
+    }
+    if (from || to) {
+        filter.createdAt = {};
+        if (from) filter.createdAt.$gte = new Date(from);
+        // The UI submits date-only values from its date picker. Preserve the
+        // previous inclusive end-date behavior instead of stopping at midnight.
+        const normalizedTo = String(to ?? '').trim();
+        if (to) filter.createdAt.$lte = new Date(/^\d{4}-\d{2}-\d{2}$/.test(normalizedTo)
+            ? `${normalizedTo}T23:59:59.999`
+            : normalizedTo);
+    }
+    const normalizedSearch = String(search ?? '').trim();
+    if (normalizedSearch) {
+        const regex = new RegExp(escapeRegex(normalizedSearch), 'i');
+        const matchingProducts = await Product.find({ $or: [{ name: regex }, { description: regex }] }).select('_id').lean();
+        const conditions = [
+            { providerOrderId: regex },
+            { providerCode: regex },
+            { 'customerInput.values.playerId': regex },
+            { 'customerInput.values.player_id': regex },
+            { 'customerInput.values.uid': regex },
+            { 'customerInput.values.userId': regex },
+            { 'customerInput.values.username': regex },
+        ];
+        if (matchingProducts.length) conditions.push({ productId: { $in: matchingProducts.map((product) => product._id) } });
+        if (mongoose.isValidObjectId(normalizedSearch)) conditions.push({ _id: new mongoose.Types.ObjectId(normalizedSearch) });
+        if (/^\d+$/.test(normalizedSearch)) {
+            conditions.push({ orderNumber: Number(normalizedSearch) });
+        }
+        conditions.push({
+            $expr: {
+                $regexMatch: {
+                    input: { $toString: '$orderNumber' },
+                    regex: escapeRegex(normalizedSearch),
+                },
+            },
+        });
+        filter.$or = conditions;
+    }
     const [orders, total] = await Promise.all([
-        Order.find({ userId })
+        Order.find(filter)
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit)
-            .populate('productId', 'name basePrice executionType'),
-        Order.countDocuments({ userId }),
+            .populate('productId', 'name image basePrice executionType'),
+        Order.countDocuments(filter),
     ]);
     return { orders, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
 };

@@ -12,6 +12,9 @@ const { markOrderAsFailed, processOrderRefund } = require('../orders/order.servi
 const { forcedDebitWallet } = require('../wallet/wallet.service');
 const { getProviderAdapter } = require('../providers/adapters/adapter.factory');
 const { Provider } = require('../providers/provider.model');
+const { Product } = require('../products/product.model');
+const { User } = require('../users/user.model');
+const { escapeRegex } = require('../../shared/utils/escapeRegex');
 const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppError');
 const { createAuditLog } = require('../audit/audit.service');
 const { ADMIN_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.constants');
@@ -34,6 +37,8 @@ const listOrders = async ({
     status,
     userId,
     providerId,
+    providerCode,
+    type,
     search,
     from,
     to,
@@ -45,18 +50,53 @@ const listOrders = async ({
 
     // 1. Single queryFilter — every condition goes directly onto this object.
     const queryFilter = {};
-    if (status) queryFilter.status = status;
+    const statusGroups = {
+        processing: [ORDER_STATUS.PENDING, ORDER_STATUS.PROCESSING],
+        completed: [ORDER_STATUS.COMPLETED],
+        incomplete: [ORDER_STATUS.FAILED, ORDER_STATUS.CANCELED, ORDER_STATUS.PARTIAL],
+        manual_review: [ORDER_STATUS.MANUAL_REVIEW],
+    };
+    const normalizedStatus = String(status ?? '').trim();
+    if (normalizedStatus && normalizedStatus !== 'all') {
+        const statuses = statusGroups[normalizedStatus.toLowerCase()] || [normalizedStatus.toUpperCase()];
+        queryFilter.status = statuses.length === 1 ? statuses[0] : { $in: statuses };
+    }
     if (userId) queryFilter.userId = new mongoose.Types.ObjectId(userId);
+    if (providerCode) queryFilter.providerCode = String(providerCode).trim().toLowerCase();
+    if (type) {
+        const normalizedType = String(type).trim().toLowerCase();
+        queryFilter.executionType = normalizedType === 'auto' ? 'automatic' : normalizedType;
+    }
+    if (providerId) {
+        const productIds = await Product.find({ provider: new mongoose.Types.ObjectId(providerId) }).select('_id').lean();
+        queryFilter.productId = { $in: productIds.map((product) => product._id) };
+    }
     if (from || to) {
         queryFilter.createdAt = {};
         if (from) queryFilter.createdAt.$gte = new Date(from);
-        if (to) queryFilter.createdAt.$lte = new Date(to);
+        // Date inputs arrive as YYYY-MM-DD; interpret the end boundary as the
+        // full selected day rather than its opening instant.
+        const normalizedTo = String(to ?? '').trim();
+        if (to) queryFilter.createdAt.$lte = new Date(/^\d{4}-\d{2}-\d{2}$/.test(normalizedTo)
+            ? `${normalizedTo}T23:59:59.999`
+            : normalizedTo);
     }
 
     // 2. Search conditions — appended as queryFilter.$or
     if (search && String(search).trim()) {
         const s = String(search).trim();
-        const searchRegex = new RegExp(s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&'), 'i');
+        const escapedSearch = escapeRegex(s);
+        const searchRegex = new RegExp(escapedSearch, 'i');
+
+        const [matchingUsers, matchingProducts, matchingProviders] = await Promise.all([
+            User.find({ $or: [{ name: searchRegex }, { email: searchRegex }] }).select('_id').lean(),
+            Product.find({ $or: [{ name: searchRegex }, { description: searchRegex }, { category: searchRegex }] }).select('_id provider').lean(),
+            Provider.find({ $or: [{ name: searchRegex }, { slug: searchRegex }] }).select('_id').lean(),
+        ]);
+        const providerIds = new Set(matchingProviders.map((provider) => String(provider._id)));
+        const providerProducts = providerIds.size
+            ? await Product.find({ provider: { $in: [...providerIds].map((id) => new mongoose.Types.ObjectId(id)) } }).select('_id').lean()
+            : [];
 
         const orConditions = [
             { 'customerInput.values.playerId': searchRegex },
@@ -65,20 +105,27 @@ const listOrders = async ({
             { 'customerInput.values.userId': searchRegex },
             { 'customerInput.values.username': searchRegex },
             { providerOrderId: searchRegex },
+            { providerCode: searchRegex },
         ];
+        if (matchingUsers.length) orConditions.push({ userId: { $in: matchingUsers.map((user) => user._id) } });
+        if (matchingProducts.length) orConditions.push({ productId: { $in: matchingProducts.map((product) => product._id) } });
+        if (providerProducts.length) orConditions.push({ productId: { $in: providerProducts.map((product) => product._id) } });
 
         // Safe ObjectId match
         if (s.length === 24 && /^[a-f\d]{24}$/i.test(s)) {
             orConditions.push({ _id: s });
         }
 
-        // Partial number match for orderNumber (stored as Number)
+        // Preserve partial order-number search. A numeric query also includes
+        // an indexed exact match before the string fallback.
+        if (/^\d+$/.test(s)) {
+            orConditions.push({ orderNumber: Number(s) });
+        }
         orConditions.push({
             $expr: {
                 $regexMatch: {
                     input: { $toString: '$orderNumber' },
-                    regex: s,
-                    options: 'i',
+                    regex: escapedSearch,
                 },
             },
         });

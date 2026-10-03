@@ -24,6 +24,8 @@ const productIdParam = [
 const listProductsValidation = [
     query('page').optional().isInt({ min: 1 }).withMessage('page must be >= 1'),
     query('limit').optional().isInt({ min: 1, max: 200 }).withMessage('limit must be 1–200'),
+    query('search').optional().isString().trim().isLength({ max: 200 }).withMessage('search must be at most 200 characters'),
+    query('category').optional().isString().trim().isLength({ max: 128 }).withMessage('category must be at most 128 characters'),
 ];
 
 // ─── Admin: create standalone product ────────────────────────────────────────

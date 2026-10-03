@@ -92,6 +92,7 @@ const updateUserSchema = Joi.object({
 
 const listUsersQuery = Joi.object({
     ...pagination,
+    search: Joi.string().trim().max(128).allow(''),
     status: Joi.string().valid('PENDING', 'ACTIVE', 'REJECTED'),
     verified: Joi.boolean(),
     email: Joi.string().max(128),
@@ -169,10 +170,12 @@ const updateProviderSchema = Joi.object({
 
 const listOrdersQuery = Joi.object({
     ...pagination,
-    status: Joi.string().valid('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELED', 'PARTIAL', 'MANUAL_REVIEW'),
+    status: Joi.string().valid('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELED', 'PARTIAL', 'MANUAL_REVIEW', 'all', 'processing', 'completed', 'incomplete', 'manual_review'),
     userId: objectId(),
     providerId: objectId(),
-    search: Joi.string().allow('', null).optional(), // <--- البطل اللي هينقذ الموقف
+    providerCode: Joi.string().trim().max(128),
+    type: Joi.string().valid('auto', 'automatic', 'manual'),
+    search: Joi.string().trim().max(200).allow('', null).optional(),
     from: Joi.date().iso(),
     to: Joi.date().iso().min(Joi.ref('from')),
 });

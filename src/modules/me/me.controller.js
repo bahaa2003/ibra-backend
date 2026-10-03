@@ -16,6 +16,7 @@ const { sendSuccess, sendCreated, sendPaginated } = require('../../shared/utils/
 const catchAsync = require('../../shared/utils/catchAsync');
 const { NotFoundError } = require('../../shared/errors/AppError');
 const { sanitizePricingForSupervisor } = require('../../shared/utils/priceVisibility');
+const { escapeRegex } = require('../../shared/utils/escapeRegex');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -109,35 +110,21 @@ const getTransactions = catchAsync(async (req, res) => {
 
 /**
  * Paginated order list for the authenticated user.
- * Query: status, page, limit, from, to
+ * Query: search, status, page, limit, from, to
  */
 const getOrders = catchAsync(async (req, res) => {
     const page = parsePage(req.query.page);
     const limit = parseLimit(req.query.limit);
-    const filter = {
-        userId: req.user._id,
-        ...(req.query.status && { status: req.query.status }),
-    };
+    const { orders, pagination } = await orderService.listOrdersForUser(req.user._id, {
+        page,
+        limit,
+        search: req.query.search,
+        status: req.query.status,
+        from: req.query.from,
+        to: req.query.to,
+    });
 
-    if (req.query.from || req.query.to) {
-        filter.createdAt = {};
-        if (req.query.from) filter.createdAt.$gte = new Date(req.query.from);
-        if (req.query.to) filter.createdAt.$lte = new Date(req.query.to);
-    }
-
-    const { Order } = require('../orders/order.model');
-    const skip = (page - 1) * limit;
-    const [orders, total] = await Promise.all([
-        Order.find(filter)
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit)
-            .populate('productId', 'name image')
-            .lean(),
-        Order.countDocuments(filter),
-    ]);
-
-    sendPaginated(res, sanitizePricingForSupervisor(orders, req.user), { page, limit, total, pages: Math.ceil(total / limit) }, 'Orders retrieved.');
+    sendPaginated(res, sanitizePricingForSupervisor(orders, req.user), pagination, 'Orders retrieved.');
 });
 
 /**
@@ -208,13 +195,17 @@ const getProducts = catchAsync(async (req, res) => {
     const { usdToLocal } = require('../../shared/utils/currencyMath');
     const { calculateFinalPrice } = require('../orders/pricing.service');
 
-    const filter = { isActive: true };
-    if (req.query.search) {
+    const filter = { isActive: true, deletedAt: null };
+    const normalizedSearch = String(req.query.search ?? '').trim();
+    if (normalizedSearch) {
+        const pattern = escapeRegex(normalizedSearch);
         filter.$or = [
-            { name: { $regex: req.query.search, $options: 'i' } },
-            { description: { $regex: req.query.search, $options: 'i' } },
+            { name: { $regex: pattern, $options: 'i' } },
+            { description: { $regex: pattern, $options: 'i' } },
         ];
     }
+    const category = String(req.query.category ?? '').trim();
+    if (category) filter.category = category;
 
     const skip = (page - 1) * limit;
     const [products, total] = await Promise.all([

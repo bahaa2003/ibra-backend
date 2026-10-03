@@ -11,11 +11,13 @@ const { sanitizePricingForSupervisor } = require('../../shared/utils/priceVisibi
 
 // GET /admin/orders
 const listOrders = catchAsync(async (req, res) => {
-    const { status, userId, providerId, search, from, to, page, limit } = req.query;
+    const { status, userId, providerId, providerCode, type, search, from, to, page, limit } = req.query;
     const result = await svc.listOrders({
         status,
         userId,
         providerId,
+        providerCode,
+        type,
         search,
         from,
         to,
