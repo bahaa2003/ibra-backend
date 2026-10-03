@@ -3,6 +3,7 @@
 const { Router } = require('express');
 
 const apiAuth = require('../../shared/middlewares/apiAuth');
+const requireCompleteProfile = require('../../shared/middlewares/requireCompleteProfile');
 const clientController = require('./client.controller');
 const {
     createClientOrderValidation,
@@ -15,6 +16,7 @@ const router = Router();
 router.use(apiAuth);
 
 router.get('/profile', clientController.getProfile);
+router.use(requireCompleteProfile);
 router.get('/products', clientController.getProducts);
 
 router.post(

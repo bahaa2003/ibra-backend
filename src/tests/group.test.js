@@ -37,9 +37,11 @@
 
 const mongoose = require('mongoose');
 const groupService = require('../modules/groups/group.service');
-const { register } = require('../modules/auth/auth.service');
+const { register: registerService } = require('../modules/auth/auth.service');
 const Group = require('../modules/groups/group.model');
 const { User } = require('../modules/users/user.model');
+
+const register = (payload) => registerService({ phone: '01012345678', ...payload });
 const {
     connectTestDB,
     disconnectTestDB,

@@ -14,7 +14,7 @@
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const { User, USER_STATUS } = require('../modules/users/user.model');
-const { register, login, verifyEmail, resendVerification } = require('../modules/auth/auth.service');
+const { register: registerService, login, verifyEmail, resendVerification } = require('../modules/auth/auth.service');
 const {
     connectTestDB,
     disconnectTestDB,
@@ -38,6 +38,8 @@ beforeEach(async () => {
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const register = (payload) => registerService({ phone: '01012345678', ...payload });
 
 /** Create a group + register a new user, return { user, rawToken }. */
 const registerUser = async () => {

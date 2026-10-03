@@ -51,6 +51,7 @@ const sendErrorDev = (err, res) => {
         code: err.code,
         message: err.message,
         errors: err.errors || undefined,
+        missingFields: err.missingFields || undefined,
         stack: err.stack,
     });
 };
@@ -66,6 +67,7 @@ const sendErrorProd = (err, res) => {
             code: err.code,
             message: err.message,
             errors: err.errors || undefined,
+            missingFields: err.missingFields || undefined,
         });
     }
 

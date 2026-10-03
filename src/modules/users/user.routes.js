@@ -32,6 +32,13 @@ router.get('/me', userController.getMyProfile);
 router.patch('/me', userController.updateMyProfile);
 
 /**
+ * @route PATCH /api/users/me/phone
+ * @desc Complete or replace only the authenticated user's phone number
+ * @access Any authenticated active user
+ */
+router.patch('/me/phone', userController.completeMyPhone);
+
+/**
  * @route  PATCH /api/users/me/avatar
  * @desc   Update own avatar
  * @access Any authenticated user

@@ -6,9 +6,24 @@ const Group = require('../groups/group.model');
 const { NotFoundError, ConflictError, BusinessRuleError } = require('../../shared/errors/AppError');
 const { createAuditLog } = require('../audit/audit.service');
 const { USER_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.constants');
+const { normalizePhone } = require('../../shared/utils/phone');
+const { toSafeUserWithProfileCompletion } = require('../../shared/utils/profileCompletion');
 
 /** Shared populate projection for group fields shown in user responses. */
 const GROUP_PROJECTION = 'name percentage isActive';
+
+/** Convert phone parsing failures into the API's normal validation error shape. */
+const normalizeProfilePhone = (phone, { allowEmpty = false } = {}) => {
+    if (allowEmpty && (phone === null || String(phone).trim() === '')) {
+        return null;
+    }
+
+    try {
+        return normalizePhone(phone);
+    } catch (error) {
+        throw new BusinessRuleError(error.message, 'INVALID_PHONE');
+    }
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ADMIN: QUERIES
@@ -216,7 +231,7 @@ const getMyProfile = async (userId) => {
         .select('-password')
         .populate('groupId', GROUP_PROJECTION);
     if (!user) throw new NotFoundError('User');
-    return user;
+    return toSafeUserWithProfileCompletion(user);
 };
 
 /**
@@ -229,7 +244,13 @@ const updateMyProfile = async (userId, { name, email, phone, username, password 
 
     if (name !== undefined) user.name = name;
     if (email !== undefined) user.email = email;
-    if (phone !== undefined) user.phone = phone;
+    if (phone !== undefined) {
+        user.phone = normalizeProfilePhone(phone, {
+            // Staff have never been subject to completion and must still be able
+            // to save unrelated profile edits when their legacy phone is blank.
+            allowEmpty: user.role !== ROLES.CUSTOMER,
+        });
+    }
     if (username !== undefined) user.username = username;
 
     if (password) {
@@ -238,7 +259,17 @@ const updateMyProfile = async (userId, { name, email, phone, username, password 
     }
 
     await user.save();
-    return user.toSafeObject ? user.toSafeObject() : user.toObject();
+    return toSafeUserWithProfileCompletion(user);
+};
+
+/** Update only the authenticated user's phone number for profile completion. */
+const completeMyPhone = async (userId, phone) => {
+    const user = await User.findById(userId);
+    if (!user) throw new NotFoundError('User');
+
+    user.phone = normalizeProfilePhone(phone);
+    await user.save();
+    return toSafeUserWithProfileCompletion(user);
 };
 
 /**
@@ -276,6 +307,7 @@ module.exports = {
     updateUser,
     getMyProfile,
     updateMyProfile,
+    completeMyPhone,
     updateMyAvatar,
     regenerateMyApiToken,
 };

@@ -1,6 +1,12 @@
 'use strict';
 
 const { body } = require('express-validator');
+const { normalizePhone } = require('../../shared/utils/phone');
+
+const validPhone = (value) => {
+    normalizePhone(value);
+    return true;
+};
 
 const registerValidation = [
     body('name')
@@ -31,9 +37,9 @@ const registerValidation = [
         .isLength({ max: 100 }),
 
     body('phone')
-        .optional()
-        .trim()
-        .isLength({ max: 30 }),
+        .notEmpty().withMessage('Phone number is required')
+        .bail()
+        .custom(validPhone),
 
     body('username')
         .optional()
@@ -102,10 +108,21 @@ const verify2FAValidation = [
         .withMessage('tempToken or requestId is required'),
 ];
 
+const completeGoogleProfileValidation = [
+    body('completionToken')
+        .trim()
+        .notEmpty().withMessage('Completion token is required'),
+    body('phone')
+        .notEmpty().withMessage('Phone number is required')
+        .bail()
+        .custom(validPhone),
+];
+
 module.exports = {
     registerValidation,
     loginValidation,
     enable2FAValidation,
     disable2FAValidation,
     verify2FAValidation,
+    completeGoogleProfileValidation,
 };

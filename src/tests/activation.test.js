@@ -42,7 +42,7 @@
  *   24. isActive virtual equals true only when status === ACTIVE
  */
 
-const { register, login } = require('../modules/auth/auth.service');
+const { register: registerService, login } = require('../modules/auth/auth.service');
 const userService = require('../modules/users/user.service');
 const { User } = require('../modules/users/user.model');
 const {
@@ -76,6 +76,8 @@ beforeEach(async () => {
 /** Unique email for each test. */
 const uniqueEmail = () =>
     `user-${Date.now()}-${Math.random().toString(36).slice(2)}@test.com`;
+
+const register = (payload) => registerService({ phone: '01012345678', ...payload });
 
 /** Register and return the created user. Requires a group to exist first. */
 const registerUser = async () => {

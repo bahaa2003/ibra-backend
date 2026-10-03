@@ -32,6 +32,8 @@ const {
 const { createAuditLog } = require('../audit/audit.service');
 const { USER_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.constants');
 const { safeCreateAdminActorNotifications } = require('../notifications/notification.service');
+const { normalizePhone } = require('../../shared/utils/phone');
+const { getProfileCompletionState, toSafeUserWithProfileCompletion } = require('../../shared/utils/profileCompletion');
 
 // ─── Private Helpers ──────────────────────────────────────────────────────────
 
@@ -60,7 +62,9 @@ const _hashToken = (raw) =>
     crypto.createHash('sha256').update(raw).digest('hex');
 
 const TWO_FACTOR_PURPOSE = '2fa-pending';
+const PROFILE_COMPLETION_PURPOSE = 'profile-completion';
 const TWO_FACTOR_TTL_MINUTES = 10;
+const PROFILE_COMPLETION_TTL_MINUTES = 10;
 const TWO_FACTOR_TTL_MS = TWO_FACTOR_TTL_MINUTES * 60 * 1000;
 
 const signTwoFactorTempToken = (userId, role) =>
@@ -68,6 +72,13 @@ const signTwoFactorTempToken = (userId, role) =>
         { id: userId, role, purpose: TWO_FACTOR_PURPOSE },
         config.jwt.secret,
         { expiresIn: `${TWO_FACTOR_TTL_MINUTES}m` }
+    );
+
+const signProfileCompletionToken = (userId) =>
+    jwt.sign(
+        { id: userId, purpose: PROFILE_COMPLETION_PURPOSE },
+        config.jwt.secret,
+        { expiresIn: `${PROFILE_COMPLETION_TTL_MINUTES}m` }
     );
 
 const hashSecret = (secret) =>
@@ -194,6 +205,12 @@ const verifyTwoFactorChallenge = (user, { otp, tempToken }) => {
  *  5. A verification email is dispatched (fire-and-forget safe).
  */
 const register = async ({ name, email, password, currency, country, phone, username }) => {
+    let normalizedPhone;
+    try {
+        normalizedPhone = normalizePhone(phone);
+    } catch (error) {
+        throw new BusinessRuleError(error.message, 'INVALID_PHONE');
+    }
     // ── 1. Prevent duplicate accounts ─────────────────────────────────────────
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) {
@@ -227,7 +244,7 @@ const register = async ({ name, email, password, currency, country, phone, usern
         emailVerificationExpires: expiresAt,
         currency: currency || 'USD',
         ...(country ? { country } : {}),
-        ...(phone ? { phone } : {}),
+        phone: normalizedPhone,
         ...(username ? { username } : {}),
     });
 
@@ -268,7 +285,7 @@ const register = async ({ name, email, password, currency, country, phone, usern
     }
 
     return {
-        user: user.toSafeObject(),
+        user: toSafeUserWithProfileCompletion(user),
         message:
             'Registration successful! Please check your email to verify your account. ' +
             'After verification, your account will be reviewed by an admin.',
@@ -369,7 +386,7 @@ const login = async ({ email, password }) => {
         metadata: { email: user.email },
     });
 
-    return { token, user: user.toSafeObject() };
+    return { token, user: toSafeUserWithProfileCompletion(user) };
 };
 
 // ─── verifyEmail ──────────────────────────────────────────────────────────────
@@ -460,20 +477,30 @@ const resendVerification = async (email) => {
  * @returns {{ token: string, user: Object, message?: string }}
  */
 const loginWithGoogle = (user) => {
+    if (user.status === USER_STATUS.REJECTED) {
+        throw new AuthenticationError(
+            'Your account was rejected by an administrator. Please contact support.'
+        );
+    }
+
+    const completion = getProfileCompletionState(user);
+    if (completion.profileCompletionRequired) {
+        return {
+            profileCompletionRequired: true,
+            missingProfileFields: completion.missingProfileFields,
+            completionToken: signProfileCompletionToken(user._id),
+            user: toSafeUserWithProfileCompletion(user),
+        };
+    }
+
     if (user.status === USER_STATUS.PENDING) {
         // Return a token-less response so the frontend can show the approval message.
         // Some frontends prefer a token even for pending users; adjust as needed.
         return {
             token: null,
-            user: user.toSafeObject(),
+            user: toSafeUserWithProfileCompletion(user),
             message: 'Your account is awaiting admin approval. You will be notified once activated.',
         };
-    }
-
-    if (user.status === USER_STATUS.REJECTED) {
-        throw new AuthenticationError(
-            'Your account was rejected by an administrator. Please contact support.'
-        );
     }
 
     const token = signToken(user._id, user.role);
@@ -487,7 +514,39 @@ const loginWithGoogle = (user) => {
         metadata: { email: user.email, method: 'google-oauth' },
     });
 
-    return { token, user: user.toSafeObject() };
+    return { token, user: toSafeUserWithProfileCompletion(user) };
+};
+
+const completeGoogleProfile = async ({ completionToken, phone }) => {
+    let decoded;
+    try {
+        decoded = jwt.verify(completionToken, config.jwt.secret);
+    } catch {
+        throw new AuthenticationError('Profile completion session has expired. Please sign in with Google again.');
+    }
+
+    if (decoded.purpose !== PROFILE_COMPLETION_PURPOSE) {
+        throw new AuthenticationError('Invalid profile completion token.');
+    }
+
+    const user = await User.findById(decoded.id);
+    if (!user) throw new NotFoundError('User');
+    if (user.role !== ROLES.CUSTOMER) {
+        throw new AuthenticationError('Profile completion is not required for this account.');
+    }
+    if (user.status === USER_STATUS.REJECTED) {
+        throw new AuthenticationError('Your account was rejected by an administrator. Please contact support.');
+    }
+
+    user.phone = normalizePhone(phone);
+    await user.save();
+
+    const safeUser = toSafeUserWithProfileCompletion(user);
+    if (user.status === USER_STATUS.PENDING) {
+        return { token: null, user: safeUser, status: user.status };
+    }
+
+    return { token: signToken(user._id, user.role), user: safeUser, status: user.status };
 };
 
 const generate2FASecret = async (userId) => {
@@ -517,7 +576,7 @@ const enable2FA = async ({ userId, otp, tempToken, requestId }) => {
         metadata: { email: user.email },
     });
 
-    return { user: user.toSafeObject(), twoFactorEnabled: true };
+    return { user: toSafeUserWithProfileCompletion(user), twoFactorEnabled: true };
 };
 
 const disable2FA = async ({ userId, currentPassword }) => {
@@ -546,7 +605,7 @@ const disable2FA = async ({ userId, currentPassword }) => {
         metadata: { email: user.email },
     });
 
-    return { user: user.toSafeObject(), twoFactorEnabled: false };
+    return { user: toSafeUserWithProfileCompletion(user), twoFactorEnabled: false };
 };
 
 const verify2FA = async ({ otp, tempToken, requestId }) => {
@@ -597,7 +656,7 @@ const verify2FA = async ({ otp, tempToken, requestId }) => {
         metadata: { email: user.email, twoFactor: true },
     });
 
-    return { token, user: user.toSafeObject() };
+    return { token, user: toSafeUserWithProfileCompletion(user) };
 };
 
 module.exports = {
@@ -606,11 +665,13 @@ module.exports = {
     verifyEmail,
     resendVerification,
     loginWithGoogle,
+    completeGoogleProfile,
     generate2FASecret,
     enable2FA,
     disable2FA,
     verify2FA,
     signTwoFactorTempToken,
+    signProfileCompletionToken,
     hashSecret,
     generateOtp,
     timingSafeCompareHex,

@@ -21,6 +21,7 @@ const {
     enable2FAValidation,
     disable2FAValidation,
     verify2FAValidation,
+    completeGoogleProfileValidation,
 } = require('./auth.validation');
 const validate = require('../../shared/middlewares/validate');
 const authenticate = require('../../shared/middlewares/authenticate');
@@ -61,6 +62,13 @@ router.post('/2fa/generate', authLimiter, authenticate, authController.generate2
 router.post('/2fa/enable', authenticate, enable2FAValidation, validate, authController.enable2FA);
 router.post('/2fa/disable', authenticate, disable2FAValidation, validate, authController.disable2FA);
 router.post('/verify-2fa', authLimiter, verify2FAValidation, validate, authController.verify2FA);
+router.post(
+    '/google/complete-profile',
+    authLimiter,
+    completeGoogleProfileValidation,
+    validate,
+    authController.completeGoogleProfile
+);
 
 // ─── Email Verification ───────────────────────────────────────────────────────
 

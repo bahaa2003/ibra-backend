@@ -51,6 +51,7 @@ const _sanitizeUserSnapshot = (snapshot) => {
     delete sanitized.emailVerificationToken;
     delete sanitized.emailVerificationExpires;
     delete sanitized.apiToken;
+    delete sanitized.phone;
     return sanitized;
 };
 

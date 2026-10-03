@@ -30,8 +30,12 @@ const authenticate = catchAsync(async (req, res, next) => {
     // 2. Verify signature
     const decoded = jwt.verify(token, config.jwt.secret);
 
-    if (decoded.purpose === '2fa-pending') {
-        throw new AuthenticationError('Two-factor verification is required before accessing this resource.');
+    if (decoded.purpose) {
+        throw new AuthenticationError(
+            decoded.purpose === '2fa-pending'
+                ? 'Two-factor verification is required before accessing this resource.'
+                : 'This token cannot access authenticated resources.'
+        );
     }
 
     // 3. Confirm user still exists

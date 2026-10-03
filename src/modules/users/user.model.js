@@ -58,6 +58,14 @@ const userSchema = new mongoose.Schema(
             select: false, // Never return password in queries by default
         },
 
+        // Optional at schema level for backwards compatibility. Completion is
+        // enforced only for active CUSTOMER business access.
+        phone: {
+            type: String,
+            trim: true,
+            default: null,
+        },
+
         // ── OAuth ────────────────────────────────────────────────────────────
         /**
          * Google OAuth sub (subject identifier).

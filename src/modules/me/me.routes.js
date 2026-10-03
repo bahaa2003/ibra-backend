@@ -29,6 +29,7 @@ const { Router } = require('express');
 const me = require('./me.controller');
 const authenticate = require('../../shared/middlewares/authenticate');
 const requireActiveUser = require('../../shared/middlewares/requireActiveUser');
+const requireCompleteProfile = require('../../shared/middlewares/requireCompleteProfile');
 const { createUpload } = require('../../shared/middlewares/upload');
 const { body, param, query } = require('express-validator');
 const validate = require('../../shared/middlewares/validate');
@@ -48,6 +49,10 @@ router.use(authenticate, requireActiveUser);
  * @access Active user
  */
 router.get('/', me.getProfile);
+
+// Profile remains available for incomplete customers; all following routes are
+// normal customer functionality and require completion for CUSTOMER only.
+router.use(requireCompleteProfile);
 
 // ─── Wallet ───────────────────────────────────────────────────────────────────
 

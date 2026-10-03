@@ -48,8 +48,10 @@ const { createAuditLog, getEntityAuditLogs, getActorAuditLogs, _sanitize } = req
 const { USER_ACTIONS, ORDER_ACTIONS, WALLET_ACTIONS, ENTITY_TYPES, ACTOR_ROLES, ALL_ACTIONS } = require('../modules/audit/audit.constants');
 const userService = require('../modules/users/user.service');
 const orderService = require('../modules/orders/order.service');
-const { register, login } = require('../modules/auth/auth.service');
+const { register: registerService, login } = require('../modules/auth/auth.service');
 const { User } = require('../modules/users/user.model');
+
+const register = (payload) => registerService({ phone: '01012345678', ...payload });
 
 const {
     connectTestDB,

@@ -17,6 +17,11 @@ const updateMyProfile = catchAsync(async (req, res) => {
     sendSuccess(res, user, 'Profile updated successfully.');
 });
 
+const completeMyPhone = catchAsync(async (req, res) => {
+    const user = await userService.completeMyPhone(req.user._id, req.body.phone);
+    sendSuccess(res, user, 'Phone number saved successfully.');
+});
+
 const updateMyAvatar = catchAsync(async (req, res) => {
     const relativePath = req.file ? `/uploads/avatars/${req.file.filename}` : null;
     const user = await userService.updateMyAvatar(req.user._id, relativePath);
@@ -75,6 +80,7 @@ const rejectUser = catchAsync(async (req, res) => {
 module.exports = {
     getMyProfile,
     updateMyProfile,
+    completeMyPhone,
     updateMyAvatar,
     regenerateMyApiToken,
     listUsers,

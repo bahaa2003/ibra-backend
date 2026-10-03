@@ -123,6 +123,12 @@ const googleCallback = catchAsync(async (req, res) => {
         .replace(/\/email-verified.*$/, '')   // strip path, keep origin
         .replace(/\/+$/, '');                  // strip trailing slashes
 
+    if (result.profileCompletionRequired && result.completionToken) {
+        return res.redirect(
+            `${frontendBase}/auth?status=profile_completion_required#profileCompletionToken=${encodeURIComponent(result.completionToken)}`
+        );
+    }
+
     // If admin not yet approved — redirect frontend can show "pending" message
     if (!result.token) {
         return res.redirect(`${frontendBase}/auth?status=pending`);
@@ -131,6 +137,14 @@ const googleCallback = catchAsync(async (req, res) => {
     // Redirect with JWT in query param so the SPA can capture it.
     // FE loginWithGoogle() reads ?token= from window.location.search.
     res.redirect(`${frontendBase}/auth?token=${result.token}`);
+});
+
+const completeGoogleProfile = catchAsync(async (req, res) => {
+    const result = await authService.completeGoogleProfile({
+        completionToken: req.body.completionToken,
+        phone: req.body.phone,
+    });
+    sendSuccess(res, result, 'Phone number saved successfully.');
 });
 
 module.exports = {
@@ -143,4 +157,5 @@ module.exports = {
     verifyEmail,
     resendVerification,
     googleCallback,
+    completeGoogleProfile,
 };

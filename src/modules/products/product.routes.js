@@ -12,6 +12,7 @@ const {
 const validate = require('../../shared/middlewares/validate');
 const authenticate = require('../../shared/middlewares/authenticate');
 const authorize = require('../../shared/middlewares/authorize');
+const requireCompleteProfile = require('../../shared/middlewares/requireCompleteProfile');
 
 const router = Router();
 
@@ -25,6 +26,7 @@ const router = Router();
 router.get(
     '/',
     authenticate,
+    requireCompleteProfile,
     listProductsValidation, validate,
     productController.listProducts
 );
@@ -37,6 +39,7 @@ router.get(
 router.get(
     '/:id',
     authenticate,
+    requireCompleteProfile,
     productIdParam, validate,
     productController.getProduct
 );
