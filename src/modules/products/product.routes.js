@@ -11,6 +11,7 @@ const {
 } = require('./product.validation');
 const validate = require('../../shared/middlewares/validate');
 const authenticate = require('../../shared/middlewares/authenticate');
+const optionalAuthenticate = require('../../shared/middlewares/optionalAuthenticate');
 const authorize = require('../../shared/middlewares/authorize');
 const requireCompleteProfile = require('../../shared/middlewares/requireCompleteProfile');
 
@@ -21,12 +22,11 @@ const router = Router();
 /**
  * @route  GET /api/products
  * @desc   List products. Customers see only active; admins see all.
- * @access Authenticated
+ * @access Public; authenticated callers receive their normal pricing context.
  */
 router.get(
     '/',
-    authenticate,
-    requireCompleteProfile,
+    optionalAuthenticate,
     listProductsValidation, validate,
     productController.listProducts
 );

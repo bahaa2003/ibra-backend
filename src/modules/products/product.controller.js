@@ -46,6 +46,28 @@ const sanitizeProductForCustomer = (product) => {
 const sanitizeProductsForCustomer = (products) =>
     (Array.isArray(products) ? products : []).map(sanitizeProductForCustomer);
 
+/**
+ * Guest catalogue responses are deliberately allowlisted. Keeping this
+ * separate from customer serialization prevents future internal pricing or
+ * provider fields from becoming public when the Product model grows.
+ */
+const sanitizeProductForGuest = (product) => {
+    if (!product) return product;
+    const obj = typeof product.toObject === 'function' ? product.toObject() : product;
+    return {
+        _id: obj._id,
+        name: obj.name,
+        description: obj.description ?? null,
+        image: obj.image ?? null,
+        category: obj.category ?? null,
+        displayOrder: obj.displayOrder ?? 0,
+        isActive: obj.isActive === true,
+    };
+};
+
+const sanitizeProductsForGuest = (products) =>
+    (Array.isArray(products) ? products : []).map(sanitizeProductForGuest);
+
 // ─── User-facing ──────────────────────────────────────────────────────────────
 
 /**
@@ -54,6 +76,7 @@ const sanitizeProductsForCustomer = (products) =>
  */
 const listProducts = catchAsync(async (req, res) => {
     const isAdmin = req.user?.role === 'ADMIN';
+    const isGuest = !req.user;
     const activeOnly = !isAdmin;
     const page = parseInt(req.query.page, 10) || 1;
     const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
@@ -62,7 +85,7 @@ const listProducts = catchAsync(async (req, res) => {
     const { products, pagination } = await productService.listProducts({ activeOnly, page, limit, search, category });
 
     // Apply group markup for non-admin users
-    if (activeOnly && req.user.groupId) {
+    if (activeOnly && req.user?.groupId) {
         const Group = require('../groups/group.model');
         const group = await Group.findById(req.user.groupId);
         const markup = Number(group?.percentage || 0);
@@ -76,7 +99,9 @@ const listProducts = catchAsync(async (req, res) => {
         }
     }
 
-    const responseProducts = isAdmin ? products : sanitizeProductsForCustomer(products);
+    const responseProducts = isGuest
+        ? sanitizeProductsForGuest(products)
+        : (isAdmin ? products : sanitizeProductsForCustomer(products));
     const safeResponseProducts = sanitizePricingForSupervisor(responseProducts, req.user);
     sendPaginated(res, safeResponseProducts, pagination, 'Products retrieved successfully.');
 });
